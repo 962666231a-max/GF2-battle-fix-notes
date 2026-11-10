@@ -1,0 +1,145 @@
+GF2 关卡 10144（BH-1-4）相关表数据摘录
+生成时间：2026-11-11 04:46:15
+
+======================================================================
+StageData[10144]
+======================================================================
+  id                       = 10144
+  chapter                  = 101
+  type                     = 'BH-1-4'
+  field4                   = (packed) [8, 62702]
+  field5                   = (packed) [8, 62699]
+  field6                   = (packed) [8, 29890]
+  recommanded_playerlevel  = 6
+  field12                  = 1
+  field13                  = 'Img_BattlePreviewPic_Story1'
+  field14                  = (packed) [10101, 10701, 10204]
+  field15                  = '\x08\x01\x10\x1e'
+  field15                  = (packed) [8, 8100, 16, 2]
+  field20                  = 11
+  round_countdown          = 5
+  field24                  = 1
+  scene                    = 'Main/Yellow/l_main_yellow_fortressPark_04/l_main_yellow_fortressPark_04'
+  stage_config             = 10144
+  xrange                   = 6
+  yrange                   = 1006
+  camera_xoz_range         = 50
+  max_cover_num            = 50
+  field33                  = '34,43,36,56'
+  field35                  = 'CutScene_Airship'
+  pollution                = 1
+  field37                  = 1
+  weather                  = 4
+  stage_time               = 3001
+  field41                  = 1
+  field42                  = 1
+  field43                  = 'City_Test'
+  field46                  = 1
+  field47                  = 118
+  field49                  = 1
+  field50                  = 1
+  field52                  = 1
+  field53                  = 32
+  field54                  = 90003
+  field55                  = '2,2'
+  field56                  = 31
+  field72                  = 101
+  field74                  = '36.52,0,54.09'
+  field84                  = 3
+  field85                  = 53
+  field87                  = 103301
+  field88                  = 1
+  field94                  = 1
+  field95                  = 1
+  field96                  = 1
+  field100                 = 1
+  field101                 = 1
+
+======================================================================
+StageConfigData[10144]
+======================================================================
+  stage_id                 = 10144
+  gun_birth_points         = '1441824:(0.0, 180.0, 0.0)::false|1376288:(0.0, 180.0, 0.0)::false|1310752:(0.0, 180.0, 0.0)::false|1245216:(0.0, 180.0, 0.0)::false'
+  enemies                  = (packed) [2022, 2027]
+  initial_enemies          = '1310742:2027:(0.0, 0.0, 0.0):1:False:False:0:False:2:0|1572889:2022:(0.0, 0.0, 0.0):1:False:False:0:False:2:0|1245211:2022:(0.0, 0.0, 0.0):1:False:False:0:False:2:0|1114141:2022:(0.0, 0.0, 0.0):1:False:False:0:False:2:0|1376280:2022:(0.0, 0.0, 0.0):1:False:False:0:False:2:0|1376279:7001:(0.0, 0.0, 0.0):1:False:False:0:False:3:0'
+  gun_min_count            = 1
+  gun_limit                = 4
+  map_id                   = 13
+  enemy_ids                = (packed) [10144001, 10144002, 10144003, 10144004, 10144005, 10144006]
+  enemy_groups             = (packed) [10144003, 10144002]
+  events                   = (packed) [10144001, 10144002, 10144003, 10144004, 10144005, 10144006, 10144007]
+  triggers                 = (packed) [10144001, 10144002, 10144003, 10144004, 10144005]
+  limited_gun              = '0|0|0'
+  gun_preset_ids           = 0
+
+======================================================================
+EnemyData[2022 / 2027]（initial_enemies 里引用的敌兵）
+======================================================================
+  --- EnemyData id=2022 ---
+     field1   = 2022
+     field3   = 1001
+     field4   = 1
+     field5   = 6110101
+     field7   = 910000018
+     field14  = 611002
+     field15  = 1
+     field16  = 10010
+     field17  = (bytes) 08 c0 d5 03
+     field18  = (bytes) 08 c1 d5 03
+     field19  = (bytes) 08 e0 a5 02
+     field20  = (bytes) 08 c2 d5 03
+     field21  = 3
+     field22  = 'Felade'
+     field23  = 6110
+     field24  = 11
+     field25  = 1
+     field26  = 600
+     field28  = 1
+     field29  = 1
+     field30  = 1
+     field31  = 1
+     field32  = (bytes) 81 e8 92 26 8f 4e e8 07 00 20
+     field33  = 1
+     field34  = 1
+     field36  = 6110101
+     field37  = 'BT/EnemyBT/EnemyBT_002+002.bt'
+     field39  = '\x04\x00\x00\x00\x00\x00'
+     field40  = (bytes) 08 99 9f 02
+     field43  = 500
+     field44  = 1
+     field53  = 1
+
+  --- EnemyData id=2027 ---
+     field1   = 2027
+     field3   = 1001
+     field4   = 2
+     field6   = 2027201
+     field15  = 1
+     field16  = 101301
+     field17  = (bytes) 08 b2 9b 05
+     field18  = (bytes) 08 f6 d3 03
+     field19  = (bytes) 08 e0 a5 02
+     field20  = (bytes) 08 f7 d3 03
+     field21  = 7
+     field22  = 'Felaste'
+     field23  = 6112
+     field24  = 11
+     field25  = 1
+     field26  = 250
+     field29  = 1
+     field30  = 1
+     field31  = 1
+     field32  = (bytes) 81 e8 92 26 8f 4e 00 00 08
+     field33  = 1
+     field34  = 1
+     field36  = 6112101
+     field37  = 'BT/MainBT/MainBT_6220.bt'
+     field39  = '\x04\x04\x00\x00\x00\x00'
+     field40  = (bytes) 08 b3 9b 05
+     field43  = 500
+     field44  = 1
+     field53  = 1
+
+======================================================================
+StageEnemyGroupData[82547331, 82547330]
+======================================================================

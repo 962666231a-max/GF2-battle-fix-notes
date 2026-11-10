@@ -1,0 +1,76 @@
+diff --git a/NTRSimulator.Common/Networking/Connection.cs b/NTRSimulator.Common/Networking/Connection.cs
+index ea5c80f..c881924 100644
+--- a/NTRSimulator.Common/Networking/Connection.cs
++++ b/NTRSimulator.Common/Networking/Connection.cs
+@@ -125,6 +125,23 @@ namespace NTRSimulator.Common.Networking
+                 return;
+             }
+ 
++            // 诊断开关：环境变量 GF2_BLOCK_MSGS="20029,23017" 可屏蔽指定 msgId 的发送
++            string? blocked = Environment.GetEnvironmentVariable("GF2_BLOCK_MSGS");
++            if (!string.IsNullOrWhiteSpace(blocked))
++            {
++                HashSet<string> set = new(blocked.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
++                int before = basePackets.Length;
++                basePackets = basePackets.Where(p => !set.Contains(((ushort)p.MsgId).ToString())).ToArray();
++                if (basePackets.Length != before)
++                {
++                    Console.WriteLine($"[BLOCK] 屏蔽 {before - basePackets.Length} 个包（GF2_BLOCK_MSGS={blocked}），剩余 {basePackets.Length}");
++                }
++                if (basePackets.Length == 0)
++                {
++                    return;
++                }
++            }
++
+             ushort bodyLength = checked((ushort)basePackets.Sum(
+                 packet => BasePacketHeader.HeaderLength + packet.Header.IMessageLength));
+             byte encryptionByte = MainMessageHeader.ComputeEncryptionByte(bodyLength);
+@@ -203,6 +220,26 @@ namespace NTRSimulator.Common.Networking
+             this.SendPacketList(sequenceId, encryptionByte, messages);
+         }
+ 
++        /// <summary>
++        /// 试验用：按当前序号发一个原始包（可指定 msgId 与 payload），
++        /// 用于逐个试“客户端到底期望哪种回包”。
++        /// 主消息格式：seq(2) + bodyLen(2) + [msgId(2) + payloadLen(2) + payload]
++        /// </summary>
++        public ushort GetSendSequence() => sendSequence;
++
++        public void SendRawPacket(ushort msgId, byte[] payload)
++        {
++            payload ??= Array.Empty<byte>();
++            int bodyLen = 4 + payload.Length;
++            byte[] bytes = new byte[4 + bodyLen];
++            BitConverter.TryWriteBytes(bytes.AsSpan(0, 2), sendSequence);
++            BitConverter.TryWriteBytes(bytes.AsSpan(2, 2), (ushort)bodyLen);
++            BitConverter.TryWriteBytes(bytes.AsSpan(4, 2), msgId);
++            BitConverter.TryWriteBytes(bytes.AsSpan(6, 2), (ushort)payload.Length);
++            payload.CopyTo(bytes, 8);
++            SendRawMainMessageHexStream(bytes);
++        }
++
+         public void SendRawMainMessageHexStream(string hexStream)
+         {
+             SendRawMainMessageHexStream(HexUtils.ParseHexStream(hexStream));
+@@ -233,6 +270,20 @@ namespace NTRSimulator.Common.Networking
+             client.Close();
+         }
+ 
++        /// <summary>
++        /// 走**正常发送通道**（序号/加密位/包头都与正常一致）发一个任意 msgId + 原始 payload。
++        /// 用于协议试错：客户端只认正常通道的包，raw 直发会被忽略。
++        /// </summary>
++        public void SendRawThroughNormalPath(ushort msgId, byte[] payload)
++        {
++            payload ??= Array.Empty<byte>();
++            BasePacket pkt = BasePacket.FromIMessageBytes(msgId, payload);
++            ushort bodyLength = checked((ushort)(BasePacketHeader.HeaderLength + pkt.Header.IMessageLength));
++            byte encryptionByte = MainMessageHeader.ComputeEncryptionByte(bodyLength);
++            ushort seq = DeferredMsgIds.Contains((NTRSimulator.Common.Protocol.MsgId)msgId) ? (ushort)0 : sendSequence;
++            Send(new MainMessage(seq, encryptionByte, new[] { pkt }));
++        }
++
+         private BasePacket[] BuildBasePackets(IEnumerable<IMessage> messages)
+         {
+             return messages

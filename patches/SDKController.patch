@@ -1,0 +1,80 @@
+diff --git a/NTRSimulator.SDKServer/Controllers/SDKController.cs b/NTRSimulator.SDKServer/Controllers/SDKController.cs
+index 02ef768..c3055cc 100644
+--- a/NTRSimulator.SDKServer/Controllers/SDKController.cs
++++ b/NTRSimulator.SDKServer/Controllers/SDKController.cs
+@@ -1,4 +1,4 @@
+-﻿using Microsoft.AspNetCore.Mvc;
++using Microsoft.AspNetCore.Mvc;
+ using Serilog;
+ 
+ namespace NTRSimulator.SDKServer.Controllers
+@@ -7,10 +7,63 @@ namespace NTRSimulator.SDKServer.Controllers
+     [Route("/")]
+     public class SDKController : ControllerBase
+     {
++        // 客户端补丁（daiyan）会把所有 *.sunborngame.com 指到本机，
++        // 所以游戏要下资源（game_resources/...）时也会打到我们这里。
++        // 以前这里一律回空 → 客户端拿到 0 KB 的 zip → "解压时发生未知错误"。
++        // 现在把资源请求反向代理到官方 CDN。
++        private static readonly HttpClient Cdn = new(new HttpClientHandler
++        {
++            AutomaticDecompression = System.Net.DecompressionMethods.All,
++        })
++        {
++            Timeout = TimeSpan.FromMinutes(10),
++        };
++
++        private static readonly string[] CdnBases =
++        [
++            "https://gf2-cn.cdn.sunborngame.com/",
++            "https://gf2.oss-cn-beijing.aliyuncs.com/",
++        ];
++
+         [HttpGet("{*catchAll}")]
+-        public IResult CatchAllGet(string catchAll)
++        public async Task<IResult> CatchAllGet(string catchAll)
+         {
+             Log.Information($"HttpGet: {catchAll}");
++
++            if (!string.IsNullOrEmpty(catchAll) &&
++                catchAll.StartsWith("game_resources", StringComparison.OrdinalIgnoreCase))
++            {
++                foreach (string cdn in CdnBases)
++                {
++                    string url = cdn + catchAll;
++                    try
++                    {
++                        using HttpResponseMessage resp =
++                            await Cdn.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, HttpContext.RequestAborted);
++
++                        if (!resp.IsSuccessStatusCode)
++                        {
++                            Log.Warning($"CDN {url} -> {(int)resp.StatusCode}");
++                            continue;
++                        }
++
++                        // 必须先把内容读进内存再返回：直接返回 resp 的流，
++                        // 方法返回后 using 会把它释放，客户端只会收到 0 字节。
++                        byte[] payload = await resp.Content.ReadAsByteArrayAsync(HttpContext.RequestAborted);
++                        string contentType = resp.Content.Headers.ContentType?.ToString() ?? "application/octet-stream";
++                        Log.Information($"CDN {url} -> 200, {payload.Length} bytes");
++                        return Results.Bytes(payload, contentType);
++                    }
++                    catch (Exception ex)
++                    {
++                        Log.Warning($"CDN 拉取失败 {url}: {ex.Message}");
++                    }
++                }
++
++                Log.Error($"game_resources 全部 CDN 都失败: {catchAll}");
++                return Results.NotFound();
++            }
++
+             return Results.Empty;
+         }
+ 
+@@ -22,4 +75,3 @@ namespace NTRSimulator.SDKServer.Controllers
+         }
+     }
+ }
+-

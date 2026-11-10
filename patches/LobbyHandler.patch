@@ -1,0 +1,13 @@
+diff --git a/NTRSimulator.GameServer/Handlers/LobbyHandler.cs b/NTRSimulator.GameServer/Handlers/LobbyHandler.cs
+index 44ec13d..41f6248 100644
+--- a/NTRSimulator.GameServer/Handlers/LobbyHandler.cs
++++ b/NTRSimulator.GameServer/Handlers/LobbyHandler.cs
+@@ -998,6 +998,8 @@ namespace NTRSimulator.GameServer.Handlers
+                             [10091] = true,
+                             [10101] = true,
+                             [10102] = true,
++                            [10144] = true,
++                            [1014411] = true,
+                             [30100] = true,
+                             [30200] = true,
+                             [30300] = true,

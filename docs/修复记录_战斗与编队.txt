@@ -1,0 +1,1745 @@
+﻿修复记录 —— 少女前线2 单机端（战斗与编队）
+================================================================
+文件用途：服务端功能状态总览 + 修复过程记录
+更新：2026-11-10
+
+================================================================
+当前服务端状态总览
+================================================================
+  协议处理器总数        960 个
+  已实现                176 个（18%）
+  未实现（调用即抛错）  785 个（82%）
+  实测可玩程度          看板端：能登录、能看图鉴/抽卡/宿舍；不能编队、不能打副本
+
+================================================================
+✅ 组别一：当前已修复 / 已对齐功能
+（此组为已跑通、已完成验证，或目前用来兜底的核心功能）
+================================================================
+  1. 登录 / 建号
+     · 账号必须邮箱格式（如 test@test.com），客户端本地校验；服务端自动建号
+     · 443 SDK 端点全部对齐：/config、/client_config、/zone/gatelist、
+       /zone/client_res_v1、/flexible_config、/dig_bak、/sdk_log 均返回 200
+
+  2. 资源下载（关键修复）
+     · SDKController 兜底路由原本一律回空 → 客户端拿到 0 字节 zip →
+       报「解压时发生未知错误」并死循环重试
+     · 已改为：game_resources/* 反向代理到官方 CDN（gf2-cn 失败再试 gf2.oss）
+     · 坑：不能直接回 resp 的流（using 提前释放），必须读进内存再 Results.Bytes
+     · 已验证：A5CFF...zip = 3,216,823 字节；Codes.zip = 28,693,828 字节
+
+  3. 服务端运行方式
+     · 登录 Windows 自动后台启动（启动文件夹 GF2服务端.lnk → 服务端（后台隐藏）.vbs）
+     · 端口 443(SDK) / 80 / 7001(游戏服) / 5432(PostgreSQL) 全部正常
+     · 数据库 ntrsimulator 自动建库建表；STC 表 1974 个 .bytes 已就位（version <数字>）
+
+  4. 启动器（复刻 + 图标）
+     · <GF2根目录>\GF2启动器（复刻）.exe，界面从原版 GF2PathPatcher-2.3 原样导出（437 KB HTML）
+     · 新增「⟳ 更新并编译服务端」按钮；图标换成官服游戏图标（9 尺寸含 256）
+     · 启动自提权；开始游戏会先确保服务端在跑，再注入 daiyan.dll 拉起客户端
+
+  5. 更新上游
+     · tools\更新上游.ps1：备份补丁(SDKController/appsettings) → git 拉上游 →
+       回填补丁 → dotnet publish → 重启校验；启动器按钮与 更新上游.bat 等价
+
+  6. 阅读类功能（上游已实现、实测可用）
+     · 角色/武器/道具/皮肤 列表与详情、图鉴、背景、宿舍基础、聊天、好友列表、
+       副官设置、活动页信息、章节列表（Chapters）
+
+================================================================
+❌ 组别二：待做功能总览（缺了啥 / 待修复项）
+（此组为目前 82% 未实现或仍处于死锁状态的功能）
+================================================================
+  1. 编队（死锁）
+     · 只有 MsgCsGetCustomFormation(23200)，且 CustomFormationHandler 回的是
+       `new PBEBLABCGEP()` 空结构
+     · MsgId 枚举里【没有"保存编队"】的消息；实测点击保存时服务端没收到任何包
+       → 判断：客户端拿到空编队结构后在本地就崩了，请求没发出来
+     · 待做：先让 GetCustomFormation 回一套合法结构，客户端才会继续发保存请求
+
+  2. 进副本（死锁，第一步就断）
+     · MsgCsStageStart(10304) → StageHandler.HandleStageStart 未实现（NotImplementedException）
+     · 实测 payload：`08 A0 4F` = { stcStageId: 10144 }
+     · 缺 SC_StageReady(10316) 的合法回包，客户端因此退回同步心跳（10105）
+     · 待做：实现 HandleStageStart → 回 SC_StageReady
+
+  3. 副本内与结算（全缺）
+     · MsgCsStageResultConfirm(10323)、MsgCsStageInto / Exit、MsgCsGetCurrStage、
+       MsgCsGetStageFight、MsgCsStageOp
+     · 战斗内：MsgCsBattleLogin(20701) / MsgScBattleResult(20711) /
+       BattleHeartBeat / BattleLoading / BattleDeploymentModification
+
+  4. 活动 / 玩法
+     · 活动关卡（Activity* 大量未实现）、世界 Boss、AMO、活动抽卡结算
+     · PVP / 异步防守（AsyncPvp*、AsyncDefend*）
+     · 剧情 Story、完整 3D 宿舍、宿舍好感、内置 GM
+
+  5. 其它
+     · 约 785 个处理器未实现，绝大多数是活动/社交/战斗细分功能
+     · 自查方法：看 server_console.log 出现
+       "HandleXXX was called for MsgCsXXX but is not implemented" 即该功能没做
+
+================================================================
+🔧 组别三：目前修复的功能（本次会话已落地的改动）
+================================================================
+  1. 资源 0 字节问题 → CDN 反向代理（SDKController.cs），已编译发布
+  2. 服务端登录自启动（启动文件夹快捷方式 + 隐藏 VBS）
+  3. 复刻启动器（WebView2 + 原版导出 HTML），新增「更新并编译服务端」
+  4. 启动器图标换官服图标（从 GF2_Exilium.exe 提取，9 个尺寸）
+  5. 更新上游脚本（备份/回填补丁，避免 CDN 修复被覆盖）
+  6. 文档：本机使用手册重写（未随包）+ 本修复记录
+  7. 目录整理：原版 exe 与素材收进 <GF2根目录>\原版启动器与素材；删掉做错的启动器与临时文件
+
+================================================================
+🎯 组别四：当前正在修复的功能与进度
+================================================================
+  目标链条：编队 → 进副本 → 客户端自己演战斗（伤害数字）→ 结算拿奖励
+  本轮只做第 1、2 步。
+
+  ① 编队保存
+     进度：勘察完成，缺真实数据
+     · 已确认：现有 GetCustomFormation 返回空结构；MsgId 里没有"保存编队"消息
+     · 待验证：点击保存时客户端到底发不发包（日志中暂未出现）
+     · 下一步：
+       a) 让 GetCustomFormation 返回一套结构完整的编队
+          （字段按 SC_GetCustomFormation #1 OGNHICHKFAD / Groups 构造）
+       b) 再让用户点保存，抓真实 msg id + payload
+       c) 实现保存并回显
+
+  ② 进副本 StageStart
+     进度：已抓到真实入参，准备实现
+     · 实测：CS_StageStart(10304) payload = `08 A0 4F` → { stcStageId: 10144 }
+     · 待实现：HandleStageStart → 回 SC_StageReady(10316)
+       SC_StageReady 字段：#1 StageId、#2 Lineup、#3 LineupGuns、#4 Sequence 等（待试）
+     · 风险：字段语义靠试探，预计 2~4 轮客户端验证
+
+  本轮结论
+     · 「副本卡死」原因已 100% 确定：StageStart 未实现（日志有 NotImplementedException）
+     · 「编队卡死」还需一次"回合法结构 → 抓包"才能确认链路
+
+================================================================
+第 2 轮 · 2026-11-11 00:00（编队 + 进副本，实测结果）
+================================================================
+  改动（已编译发布，服务端已重启）
+    1) CustomFormationHandler
+       · GetCustomFormation：不再回空结构，返回 12 条完整编队（编队1~编队12）
+       · CustomFormationModify：存进内存字典并回显
+       · CustomFormationModifyName：改名并回显
+    2) StageHandler.HandleStageStart
+       · 收到 CS_StageStart{stcStageId} → 回 SC_StageReady{Timestamp=当前毫秒}
+    服务端启动日志确认已挂上：
+       Mapped MsgCsCustomFormationModify -> HandleCustomFormationModify
+       Mapped MsgCsCustomFormationModifyName -> HandleCustomFormationModifyName
+       Mapped MsgCsStageStart -> HandleStageStart
+
+  ✅ 实测结果
+    · 编队：不卡了，能正常操作（用户确认"编队成功"）
+    · 进副本：StageStart 有回包，能进入战斗场景（用户确认"副本成功进入"）
+
+  ❌ 新问题：进战斗后黑屏
+    实测日志（23:51:24）：
+      收到 MsgCsStageStart { stcStageId: 10144 }
+      发出 MsgScStageReady { timestamp: <数字> }
+      然后 21 秒只有 MsgCsSync（10105/10106），没有：
+        · 没有任何 HTTP 请求（不是在下载资源）
+        · 没有 CS_BattleLogin(20701)（客户端没连战斗服）
+    结论：客户端停在"战斗场景初始化"，既不等网络包也不下载资源
+          → 不是 StageReady 回包缺字段造成的，而是战斗侧本身没有对端
+
+  分析（为什么黑屏）
+    · 协议里 MsgId 枚举没有 MsgScStageInto，SC_StageInto 类虽然存在但没消息号
+      → 说明这个版本的战斗不是"服务端下发战场数据"这一套
+    · 战斗内只有 MsgCsBattleLogin(20701) / MsgScBattleResult(20711) 两个号，
+      且客户端在我们回 Ready 后从没发 BattleLogin
+    · 推测：GF2 的战斗是"独立战斗服（可能 UDP）+ 服务端权威"，
+      客户端要连到战斗服才会推进；NTRSimulator 未实现这部分
+    · Windows 下截图是白的（Unity 硬件渲染，PrintWindow 抓不到），无法看画面细节
+
+  下一步可选（按代价排序）
+    A. 抓客户端日志（Unity Player.log 目前是空的，Sentry 目录也在）
+       → 需要给客户端开 Unity logcat（-logFile 参数）才能看到黑屏卡在哪一帧
+    B. 反推 BattleLogin 的触发条件：改 StageReady 的 Timestamp 语义试几种值
+       （比如回 0、回未来时间、或额外推一条 SC_GetCurrStage 的回复）
+    C. 直接做战斗服（大工程，上游也没做）：需要实现 20701 登录 + 战斗同步协议
+    D. 换思路：把"副本"改成"模拟战斗"（SimCombat）——上游实现了 SimCombat 相关
+       info 处理器（HandleSimCombatInfo 等），也许那条路客户端也能打，只是没有奖励
+
+  当前状态标记
+    编队   ✅ 可用（12 个）
+    进副本 ⚠️ 能进场景，但黑屏，未通
+    结算   ⛔ 未做（等战斗先通）
+
+================================================================
+第 3 轮 · 2026-11-11（参考战双私服 + 下一步取证）
+================================================================
+  用户建议：参考 <本机路径>）怎么处理战斗，说它没重做战斗逻辑，
+            但整条副本流程是通的。
+
+  实际勘察 <本机路径>
+    · <本机路径> 是编译好的 .NET 单文件（128 MB），**没有源码**
+    · Server 目录只有 Configs / Data / table（配置与表）、Proxy
+    · 没有 battle/stage 的源码文件可读
+    ⇒ 无法"照抄实现"，只能照思路：战双那类游戏战斗是客户端算，服务端只发准入与结算
+
+  这跟我们对 GF2 的现状判断一致：
+    · StageStart 回 StageReady 后，客户端没发 BattleLogin、没发 HTTP 请求
+    · 说明它卡在"战斗场景初始化"，而不是等我们某个回包
+    · 关键未知：客户端此时想连谁（是否有独立战斗服，TCP 还是 UDP）
+
+  下一步取证（需要用户配合一次）
+    1) 用户进副本 → 停在黑屏，**不要关游戏**
+    2) 我这边查：
+         Get-NetTCPConnection -OwningProcess <GF2_Exilium PID>
+         Get-NetUDPEndpoint   -OwningProcess <GF2_Exilium PID>
+       → 看它有没有往外连一个"战斗服"地址（或开 UDP 端口）
+    3) 再看 server_console.log 有没有新包
+    判定：
+      · 若连了外部 IP/UDP → 确认存在独立战斗服，再做"本地战斗服桩"
+      · 若完全没有网络动作 → 是纯客户端资源/场景问题，走资源排查路线
+
+  顺带记：战双私服 AscNet 也是 .NET 编译产物，说明这类私服普遍做法是
+          "协议兼容 + 客户端算战斗"，值得作为我们的方向参考（不做服务端战斗模拟）。
+
+================================================================
+第 4 轮 · 2026-11-11 00:05（黑屏根因：客户端战斗初始化返回 -<数字>）
+================================================================
+  取证方式
+    · 客户端其实有日志：GF2_Exilium_Data\LocalCache\Log\log_*_last.bin（gzip 压缩，
+      解压后是 UTF-16 字符串混杂的二进制流）
+    · 解压后按 UTF-16 抽串，能还原出客户端流水
+
+  关键日志（按时间顺序）
+    [Tutorial] stageId:10144 + type:EMBATTLE_BEFORE => AvgId:<数字>  Frame:6420
+    [Battle] Load Scene Task:...(287/288/289/290) Start
+    SceneSystem SwitchVisible:Battle
+     start stage
+    , ret code
+     -<数字>
+    [UI - Close] UIType: 19  UIName: ChangeSceneLoadingPanel ... State:Hide
+    （之后只有 CriWare 音频静音切换和 "referenced script ... is missing" 的常规噪声）
+
+  ⇒ 结论：场景其实加载完成了，加载条也关了；
+     是「start stage」这一步客户端返回错误码 -<数字> → 战斗没起来 → 黑屏。
+     -<数字> 是客户端侧的战斗初始化失败码，不是网络超时（此时无任何包/HTTP）。
+
+  已知背景
+    · 10144 是【新手教学关】（EMBATTLE_BEFORE），不是普通关卡
+    · 教学相关：MsgCsTutorialInfo(11400) 已实现；TutorialFinish(11402) 在日志里出现过
+      SimCombatTutorial* 一批未实现
+    · 客户端战斗资源齐全（AssetBundles_Windows 76.7 GB / 11036 个 bundle）
+
+  下一步（区分两种可能）
+    A. 教学专属问题：让用户去点一个【非教学的普通关卡】（第 1 章后面几关），
+       如果普通关卡能进战斗 → 说明黑屏只发生在教学关，走教学状态修复
+    B. 全局战斗问题：如果普通关卡也黑屏且同样 -<数字>
+       → 客户端战斗初始化就依赖某段我们没实现的协议/状态，需要继续深挖
+    本轮先做 A（用户点一次普通关卡即可判定）
+
+  状态更新
+    编队   ✅ 12 个，可用
+    进副本 ⚠️ 能进场景、加载条走完，但 start stage 返回 -<数字> → 黑屏
+    结算   ⛔ 未做
+
+================================================================
+第 5 轮 · 2026-11-11 00:10（普通关也黑屏；定位到"等重连战斗"）
+================================================================
+  实测
+    · 用户从每日任务入口点 1-4（1-2/1-3 已三星），同样黑屏
+    · 当前会话日志 log_20261111000504.bin_c1 解析结果：
+        stageIds=['10144']   ret=['<数字>','<数字>','<数字>','-<数字>']
+      → 即使点普通关，客户端加载的仍是 10144，返回码仍是 -<数字>
+
+  客户端日志里两个关键预加载步骤（黑屏前的最后阶段）
+    ### m_PreloadStep = WaitForReConnectLogic  FrameCount = 1376
+    ### m_PreloadStep = WaitForReConnectView   FrameCount = 1377
+    ### m_PreloadStep = 9                      FrameCount = 1378
+    [Battle] Load Scene Task:...(118/119/120/121) Start
+    ...
+     start stage
+    , ret code
+     -<数字>
+
+  ⇒ 客户端在"等战斗重连"这一步之后调用 start stage，返回 -<数字>，
+    场景加载条随即关闭 → 黑屏。
+    这说明战斗侧需要一个"战斗会话"（reconnect logic / view），
+    而我们的服务端从没建立过这种会话 —— 客户端也没发 BattleLogin(20701)。
+
+  已排除
+    · 网络：黑屏期间无任何新的 TCP/UDP、无 HTTP 请求
+    · 资源：AssetBundles_Windows 76.7 GB / 11036 个 bundle，Load Scene Task 都正常 Start
+    · 教学专属：普通关（用户以为的 1-4）同样 -<数字>，客户端仍走 10144
+
+  还没排除 / 下一步
+    A. Lua 逻辑（客户端用 _LuaEnvController，逻辑大概率在 Lua）
+       本机没找到明文 .lua；脚本应在 AssetBundle 内 → 需要解包（AssetStudio 类工具）
+       解出来能直接看到 -<数字> 的判定条件，是唯一"确定"的路
+    B. 试推战斗会话消息：在 StageReady 之后主动推 SC_StageInto（无 MsgId）
+       或猜 BattleLogin 握手 → 纯试错，成功率不确定
+    C. 停在这里：编队已修好，副本止步于黑屏，写入交接
+
+  当前结论（写清楚，避免后来人重复劳动）
+    · 编队 ✅
+    · 副本 ⚠️ 场景能加载、加载条能走完，但 start stage 返回 -<数字> → 黑屏
+    · 结算 ⛔ 未做
+    · 根因方向：战斗会话（reconnect/battle login）缺失，属客户端-服务端握手层，
+      不是资源、不是网络超时、不是教学脚本
+
+================================================================
+第 6 轮 · 2026-11-11 00:25（找 Lua：bundle 是 XOR 混淆的）
+================================================================
+  目的：客户端逻辑在 Lua（日志有 _LuaEnvController），
+        想直接看 "start stage 返回 -<数字>" 的判定条件。
+
+  做法与结果
+    1) 装了 UnityPy 1.25.4，写 tools\scan_lua.py 扫 11036 个 bundle
+       找 Lua 字节码签名 \x1bLua / LuaEnvController / "start stage"
+       → 命中 1 个：572d977f94ce889cda84692f3fad9dab.bundle（1.9 MB）
+    2) 用 UnityPy 打开该 bundle → 对象数 0（解不开）
+    3) 查文件头：不是 "UnityFS"，是被整体混淆过的字节
+       但能搜到 \x1bLua 签名（说明有部分区域未加密）
+    4) 用 "UnityFS\0" 反推前 8 字节键：
+         期望: 55 6e 69 74 79 46 53 00
+         实际: 6f 2d 6e e8 86 b9 ac ff
+         键  : 3a 43 07 9c ff ff ff ff
+       按此键解前 200KB → 出现 "2019.4.29f1"、"CAB-5dec4ac5b35a9f..."、
+       "m_ForcedFallbackFormat"（有个字符仍错位：, vs .）
+       ⇒ 确认：**bundle 被 XOR 混淆，但键是位置相关的（不是 8 字节循环）**
+    5) 找解密器位置：
+         GameAssembly.dll   → 无 "UnityFS" 字符串
+         global-metadata.dat → 无
+         UnityPlayer.dll    → 有 "UnityFS"
+         NEP2.dll（37.5 MB）→ 有 Decrypt/XOR 字样（19 处 XOR，11 处 Decrypt）
+       ⇒ 解密逻辑很可能在 NEP2.dll（混淆过的原生代码），逆向成本高
+
+  结论
+    · Lua 逻辑确实在客户端，但被打包加密；要读它必须先逆出 NEP2.dll 的解密算法
+    · 这是一条明确的、但不便宜的路线（原生混淆逆向）
+
+  当前三条路（交给用户定）
+    A. 继续逆 NEP2.dll 的解密（读 Lua → 直接知道 -<数字> 要什么）
+    B. 盲试战斗会话：在 StageReady 后推 SC_StageInto / 猜 BattleLogin 握手（便宜，成功率不确定）
+    C. 到此为止：编队已修（12 个），副本停在黑屏，写交接
+
+  本轮状态
+    编队   ✅ 12 个可用（已实测）
+    副本   ⚠️ 场景加载完、加载条关闭，但 start stage 返回 -<数字> → 黑屏
+    结算   ⛔ 未做
+
+================================================================
+第 7 轮 · 2026-11-11 00:45（按平台规范归位 + 内存取流结果）
+================================================================
+  工具归位（按 _AI_FUSION_GUIDE.md）
+    · 可复用工具 → <工具目录>\
+        module.json（游戏/版本登记 + 已知事实）
+        _adapter.py（平台 §8.3 decrypt/encrypt；无密钥流时明确报错，不伪装成功）
+        tools\抓内存.bat（memx 提权封装，参数：探针 / padMB）
+        tools\scan_lua.py（磁盘 bundle 扫 \x1bLua）
+        tools\carve_unityfs.py（从内存 dump 抠 UnityFS）
+        tools\scan_bundles.py（UnityPy 扫抠出来的 bundle 找 Lua/TextAsset）
+        tools\derive_keystream.py（密文/明文配对反推密钥流）
+    · 已注册 <工具目录>\games\game_config.json → games.GF2.versions.v4.0.5136（wip）
+      active 仍 QQSG/v2013（未切换，符合"切换必须过 regress"）
+    · 中间产物 → <中间产物目录>\
+        GF2_memdump\（内存区 dump，约 220 MB）
+        GF2_bundles\（从内存抠出的 130 个 UnityFS，98 MB）
+
+  本轮实测结果
+    1) memx 用 UnityFS 探针抓到 4 个内存区（region_0..3），其中 UnityFS 出现
+       776 / 291 / 279 / 191 / 26 / 21 次
+    2) carve_unityfs.py 抠出 130 个 bundle；但 UnityPy 解析**全部失败**
+       报错类型：String not terminated / Position cannot be negative /
+                 Unknown compression flag / unpack_from 越界 1~4 字节
+       ⇒ 内存里的 "UnityFS" 是**碎片**，不是完整可解析的容器
+    3) 内存 dump 里没有任何 \x1bLua 字节码（说明 Lua 不是以字节码形式常驻）
+    4) derive_keystream.py 尝试"同一 bundle 的密文/明文配对"，11036 个磁盘 bundle
+       里没找到尺寸可配对且能让目标头变 UnityFS 的组合
+       ⇒ 密钥流大概率与文件相关（per-file key），或内存里保存的是重新打包过的形态
+
+  结论
+    · 内存取流这条路比预想难：拿到的不是干净容器
+    · 要继续必须二选一：
+        A. 逆 NEP2.dll 的解密算法（拿到真正的逐文件密钥规则）
+        B. 再想别的口子（例如让客户端把 Lua 以文本形式驻留时抓、或找它解密后的
+           TextAsset 在内存中的明文块，用 Lua 特有字符串当探针）
+    · 本轮没有推进"黑屏"本身，但把工具链按平台规范建好了，
+      后来人可以直接复用（扫包、抠包、装 adapter、抓内存都是一条命令）
+
+  状态
+    编队   ✅ 12 个可用
+    副本   ⚠️ 进场景后 start stage 返回 -<数字> → 黑屏（根因仍指"战斗会话缺失"）
+    结算   ⛔ 未做
+
+================================================================
+第 8 轮 · 2026-11-11 01:10（内存取证成功：证明 start stage 是纯本地失败）
+================================================================
+  取内存改走"免提权"路线（先决条件：游戏要用普通权限启动）
+    原因：游戏经启动器启动是管理员权限 → memx 读不了 → 要 UAC；
+          改成直接双击客户端 launcher.exe（普通权限）后，memx 无须提权即可读。
+    命令（平台工具，未手搓）：
+      _memory_extract.py --process GF2_Exilium.exe         --needles EMBATTLE_BEFORE,ChangeSceneLoadingPanel,WaitForReConnectLogic,
+                  m_PreloadStep,PreloadCutscene --top 5 --pad 16
+
+  抓到 5 个内存区（40~180 MB），探针命中最高 22 次。关键发现：
+
+  ① 客户端字符串池里暴露了战斗流程的真实步骤（UTF-16）：
+       " into stage {0}, ret code {1}"
+       "StageInto" / "OnStageIntoResponded"
+       " start stage {0}, ret code {1}"
+       "### m_PreloadStep = {0} FrameCount = {1}"
+       "BattleReconnect" / "BattleRestart" / "BattleReplay" / "SLGRestartCurrentStage"
+       "OfflineEnemyData" / "battle scene onenter, stage type:"
+
+  ② 但服务端日志证明：StageReady 之后客户端**一个包都没发**
+       （只有 10105/10106 MsgCsSync 心跳）
+       ⇒ 客户端根本没在等我们回包；"into stage" 与 "start stage" 都是**本地调用**，
+          -<数字> 是本地返回码（不是网络错误、不是超时）
+       ⇒ 之前"补 StageInto 回包"的思路是错的，不做
+
+  ③ 客户端 Lua：XLua，脚本名只看到 Main.lua / MainFix.lua.txt，
+       内存里**没有 Lua 源码文本**，也没有 \x1bLua 字节码
+       → 说明 Lua 已编译并在加载时解析，读不到源码
+
+  ④ 因此要把 -<数字> 的判定看明白，只有两条路：
+       A. 逆 NEP2.dll（bundle 解密器 / 或 Lua 加载器），拿到脚本或算法
+       B. 拿到一份官方战斗抓包（pcap），用上游 PcapUtils 回放对照
+
+  状态
+    编队   ✅ 12 个可用（实测）
+    副本   ⚠️ 能进场景，本地 start stage 返回 -<数字> → 黑屏
+    结算   ⛔ 未做
+
+  中间产物
+    <中间产物目录>\GF2_memdump\  5 个 region（约 365 MB）
+    注：体积较大，若不再继续可删；关键结论已在本文件
+
+================================================================
+第 9 轮 · 2026-11-11 01:30（NEP2.dll 逆向勘察，A 路线第一步）
+================================================================
+  目的：逆 NEP2.dll，拿 bundle 解密算法 / 或拿到 Lua 逻辑
+
+  已完成的结构勘察（都是平台工具：rg / rea.cmd / python 解析 PE）
+    · 格式：PE32+ x64，12 个节，.text 7.7MB
+    · 节名可疑：.ndata0 / .ndata1 / _RDATA / .fptable / Shared / .200
+      → 典型壳或自定义保护器（不是标准 MSVC 布局）
+    · .rsrc 巨大：0x<数字> ≈ 25.6 MB（可能内嵌数据/脚本）
+    · 导出表只有 1 个函数：NEP_Unknown @ RVA 0x1BD9B0
+    · 内嵌 **Lua 5.3 运行时**（找到标准 package.path：!\lua\?.lua;...\share\lua\5.3\?.lua）
+      + 2 处 \x1bLua 字节码头（0x4F232E 是代码中的常量，0x7D5C10 是标准头常量）
+      ⇒ NEP2 自己带 Lua VM，逻辑很可能是"原生 + Lua 脚本"混合
+    · 字符串里没有 "UnityFS"（说明解密点不按明文魔数比较，或魔数被拆开/加密）
+    · 没有 AES S-Box / SHA256 常量 → 不太可能是标准 AES/SHA 软实现
+    · 有 71 处 zlib 流（78 9C）
+
+  已知困难
+    · 本机没有 IDA/Ghidra（平台 tools.json 已注明），只有 x64dbg
+    · NEP2 是混淆/壳，静态读函数体成本高
+
+  ★ 换思路（推荐，比解 bundle 更直接）
+    GF2 客户端用 XLua：Lua 脚本加载必经 luaL_loadbuffer / lua_load 一类的入口。
+    只要在游戏进程内 hook 这个入口，就能把**每个 Lua 脚本的字节码**原样 dump 出来，
+    再用 unluac（Lua 5.3）反编译 → 直接看到 "start stage" 与 -<数字> 的判定。
+    平台已有现成 Hook 工具链可复用：
+      <工具目录>\09_进程内Hook\  injector.exe / inject_pid.exe / probe.exe /
+                                    proxy_xinput.c（代理 DLL 模板）/ aes_hook.S / build.py
+      mingw: <本机路径>
+    ⇒ 下一步：写一个 proxy DLL（基于 proxy_xinput 模板）Hook Lua 装载函数，
+       把脚本落盘。这比逆 NEP2 的 bundle 解密要短得多。
+
+  备选
+    · B2 用 x64dbg 手动在 NEP_Unknown 下断点追解密（交互式，慢）
+    · B3 等有官方抓包时用 PcapUtils 回放（现在没有包）
+
+  状态
+    编队   ✅ 12 个可用
+    副本   ⚠️ 本地 start stage 返回 -<数字> → 黑屏
+    结算   ⛔ 未做
+
+================================================================
+第 10 轮 · 2026-11-11 01:40（注入/代理/侧载三连试 + 关键定性结论）
+================================================================
+  目标：把 Lua 脚本截出来，看 start stage 为什么返回 -<数字>
+
+  一、远程注入（inject_pid.exe + 自建 hook DLL）
+     · gf2_luahook.dll 编译成功（51 KB，改 IAT 劫持 luaL_loadbufferx）
+     · 注入报错：remote LoadLibraryW returned 0x0
+     · 同一 DLL 在普通进程里能正常加载（0x<数字>）
+     ⇒ 游戏进程有反注入，远程 LoadLibrary 被拦
+
+  二、代理 xlua.dll（改 Plugins 目录里的 DLL）
+     · 第一次失败：GetModuleFileNameA 传了函数地址（不是模块句柄）→ 找不到 xlua_real.dll
+     · 第二次：代理加载了（sentry 方案里看到进程内有小体积模块）
+     · ★ 但触发客户端完整性校验 → 开始重下 28.61 GB 资源（24MB/s）
+     · 已紧急止损：还原 sentry.dll/xlua.dll、删除 sentry_real/xlua_real/origbak、
+       清掉 5 个 .download 残留；资源完好 11171 个文件 / 76.91 GB
+     ⇒ 结论：**不要改 Plugins 目录里的 DLL**，会触发修复式重下
+
+  三、侧载 xinput1_3.dll（照搬崩坏3 9.1 单机化里的"侧载当内鬼"套路）
+     · 放到游戏根目录（不在校验清单里），UnityPlayer 优先加载它
+     · 实测成功：进程模块列表出现
+       xinput1_3.dll  <GF2根目录>\...\GF2 Game\xinput1_3.dll
+       日志 _sideload_log.txt: "xinput sideload attach pid=19080"
+     · 不需要注入、不需要 UAC、反作弊不杀、删文件即卸载
+     ⇒ ★ 这是本机目前**唯一稳定可用**的进程内代码执行方式
+
+  四、用侧载 DLL 得到的三个硬结论
+     1) GameAssembly.dll 对 xlua.dll / lua54.dll 的导入数 = 0
+        （日志: [import] total xlua/lua imports=0，xlua 模块句柄 = 0）
+        ⇒ **Lua 运行时是静态链接进 GameAssembly 的**，没有外部 DLL 可钩
+        ⇒ 之前 hook luaL_loadbufferx / xluaL_loadbuffer 的思路全部作废
+     2) 内存扫描找 \x1bLua：命中 5 处，全是假阳性
+        头部为 1b 4c 75 61 49 8d 52 fc（x86: lea rdx,[r10-4]），
+        正是 NEP2.dll 0x4F232E 处的"net 字符串常量"；
+        真正的 Lua 5.4 块应以 1b 4c 75 61 54 开头 → 内存里一个都没有
+        ⇒ Lua 脚本不以字节码形式常驻内存（加载即编译/释放）
+     3) .NET 那套 DOTNET_STARTUP_HOOKS（崩坏3 服务端用的）不适用：
+        GF2 客户端是 Unity IL2CPP，不是 .NET 进程
+
+  五、日志与文档类副产品（都验证有效）
+     · 客户端日志可用 -logFile <path> 启动参数落盘（崩坏3 文档实证，
+       对 GF2 同样适用，可拿到 C# 层异常栈，比 Lua 日志更直接）
+
+  仍然缺的那一步
+     · 要读 Lua 逻辑，只剩两条：
+       A. Ghidra 静态分析 GameAssembly.dll，找 Lua 5.4 的解释器/装载函数
+          （可用已装 Ghidra 12.1.4 无头分析，纯静态、不碰客户端）
+       B. 拿一份官方战斗抓包，用上游 PcapUtils 回放
+
+================================================================
+第 11 轮 · 2026-11-11 02:30（★ 可复用套路定型：侧载 + mmap 抓明文包）
+================================================================
+
+【一、这一轮真正做成的事】
+
+  1) 侧载 DLL 成功进入游戏进程（不需要注入、不需要 UAC、不触发完整性校验）
+     · 文件：游戏根目录 xinput1_3.dll（我们自己的代理，61~67 KB）
+     · 路径：<GF2根目录>\...\GF2 Game\GF2 Game\GF2 Game\xinput1_3.dll
+     · 证据：进程模块列表出现该路径；日志 _sideload_log.txt 写入
+             "xinput sideload attach pid=xxxx"
+     · 卸载：删掉这个文件即可，无注册表、无驱动、无残留
+
+  2) 抓到「解密后的 UnityFS」共 1064 个（其中 577 个可被 UnityPy 正常解析）
+     · 钩的是 NEP2.dll + GameAssembly.dll 的导入表：
+         KERNEL32!ReadFile / MapViewOfFile / CreateFileW
+     · 判定：读到的内存一旦以 "UnityFS\0" 开头且头部字段合法 → 按声明长度落盘
+     · 产物：<中间产物目录>\GF2_lua\read_<序号>_<长度>.bundle
+
+  3) 证明 bundle 解密是「就地（in-place）解密 + 写回映射文件」
+     · 磁盘上 8250 个 bundle 里，已有 4163 个只剩前 12 字节是密文：
+         前 4 字节：每文件不同的 4 字节密钥（4163 个全不一样）
+         第 4~8 字节：已经是 "yFS\0"（原文 "UnityFS\0" 的后半）
+         第 8~12 字节：版本字段也被部分改写
+       ⇒ 解密器只对文件前 12 字节做了变换，其余原样写回
+       ⇒ 副作用：跑过一次游戏后，磁盘上一半的包其实已经是明文了
+
+  4) 排除法确认「AES 不是 bundle 解密用的」
+     · NEP2.dll 内联 AES-NI（aeskeygenassist 0x154555A、aesdec 0x1545A95…、aesenc 0x1545E6C…）
+     · 在 4 个 AES 指令地址下 int3 断点（VEH 处理、单步恢复、命中 dump xmm0~15）
+     · 进副本全程 0 命中 ⇒ AES 用于网络/反作弊，不是资源解密
+     · NG 结论：不要再往 AES 方向找密钥
+
+  5) 排除「内存里能捡到整包明文」
+     · 内存中搜到的 "UnityFS" 绝大多数是假头（后面跟的是 hash 字符串）
+     · 说明不会把整包明文长期留在堆里，只能拦「读取/映射」的那一瞬间（已在 2 做到）
+
+【二、可复用套路（建议原样写进平台文档 / 推给上游）】
+
+  套路 A：侧载 xinput1_3.dll（本机唯一稳定可用的进程内代码执行方式）
+    适用：Unity 游戏，有完整性校验、拦远程注入、改 Plugins 会触发重下
+    做法：
+      1. 编译一个 xinput1_3.dll 代理（导出 XInputGetState 等 6 个函数，
+         内部转发给系统 xinput1_4.dll；DllMain 里起自己的线程）
+      2. 放到 **游戏根目录**（不是 Plugins）
+      3. 启动游戏 → UnityPlayer 会优先从游戏目录加载它
+    优点：不用 UAC、不用注入、反作弊不杀、不触发校验、删文件即卸载
+    坑：所有路径必须用宽字符 API（CreateFileW/wsprintfW）；
+        用 CreateFileA + UTF-8 中文字面量会被按 GBK 解释 → 写文件静默失败
+        （这个坑当时卡了一整轮，日志和 dump 都写不出来）
+
+  套路 B：抓解密后的 AssetBundle（钩导入表，不改任何客户端文件）
+    做法：
+      1. 对 NEP2.dll 和 GameAssembly.dll 同时改导入表：
+           Kernel32!ReadFile / MapViewOfFile / CreateFileW → 自己的函数
+      2. ReadFile 记 (buf,len)；MapViewOfFile 记 (base,len)；CreateFileW 记路径
+      3. 后台线程轮询这些地址，出现 "UnityFS\0" 且头部合法 → 按声明长度落盘
+    关键细节（都是踩过的）：
+      · 长度上限要用 VirtualQuery 取「区域剩余可用大小」，再和头部声明长度取 min
+        否则大包会被截断成 32768 字节，UnityPy 报 Decompression failed
+      · 假头过滤：真 UnityFS 头后面是 version 字符串（"5.x.x"/"2019.4.29f1"），
+        假头后面是 32 位 hex hash
+      · CreateFileMappingW 也建议一起钩（能直接拿到文件长度，最稳）
+
+  套路 C：指令级断点（VEH + int3）用于确认某段代码是否参与
+    做法：AddVectoredExceptionHandler；在目标地址写 0xCC；
+          异常里 dump 寄存器；恢复原字节→单步→再写回 0xCC
+    用途：像本轮这样「验证 AES 到底是不是解密用的」非常高效
+    注意：要加重入保护，否则多线程下会死循环
+
+【三、下一步（还差的那一步）】
+
+  现状：已能拿到明文 AssetBundle 并解析（AnimationClip/Material/Texture2D/TextAsset…），
+        但 1064 个包里 TextAsset 只有 4 个（都是本地化表），**没有 Lua 脚本**。
+  说明：Lua 不在这些常规包里，或在我们没抓全的那批（427 个解析失败）里。
+  待办：
+    1. 把 CreateFileMappingW 也钩上，拿到精确文件长度 → 解决截断
+    2. 抓全后按 TextAsset 名字筛（内存里出现过 Main.lua.txt / MainFix.lua.txt）
+    3. 找到 Lua 后用 unluac（Lua 5.4）反编译 → 定位 start stage 返回 -<数字> 的条件
+  备用：Ghidra 静态分析 GameAssembly（本机 Ghidra 12.1.4 可用，纯静态、不碰客户端）
+
+【四、给上游的补丁清单（当前已落地、可独立提 PR 的部分）】
+
+  1. 编队 12 组（CustomFormationHandler.cs）
+     · FormationCount = 12；EnsureDefaults() 预置 编队1..编队12
+     · 实现 GetCustomFormation / CustomFormationModify / CustomFormationModifyName
+     · 实测可用（这是本轮唯一用户可感知的功能修复）
+  2. HandleStageStart（StageHandler.cs）
+     · 回 SC_StageReady{ Timestamp }，客户端能进场景（但随后本地报 -<数字>）
+  3. SDK 资源反向代理（SDKController.cs 的 CatchAllGet）
+     · 把 game_resources/* 反代到官方 CDN，解决"解压时发生未知错误"
+     · 必须用 ReadAsByteArrayAsync + Results.Bytes（Results.Stream 会 0 字节）
+  以上三项与「抓包/侧载」无关，可单独打包推送；战斗本体仍待 Lua 侧突破。
+
+================================================================
+第 12 轮 · 2026-11-11 03:40（★ 找到 C# 程序集：Assembly-CSharp.dll）
+================================================================
+
+  一、重大发现：客户端带完整托管程序集（可反编译）
+    路径：GF2_Exilium_Data\LocalCache\Data\ClientRes_Windows\4.0.5136\Codes\*.dll.bytes
+    其中：
+      Assembly-CSharp.dll.bytes          24.79 MB  ← 真 .NET 程序集（MZ + BSJB 元数据）
+      NetworkProtocol.dll.bytes          11.35 MB  ← 协议定义（含 StageInto x7）
+      Common.dll.bytes                    3.17 MB  ← 含 StageInto x4
+      StaticTable.dll.bytes              12.62 MB
+      CommonUtils.dll.bytes               3.20 MB
+      另有 *_HUDll.u / *_AOT.u（热更新/ AOT 变体，已加密，非 MZ 头）
+
+  二、反编译环境（平台现成）
+    工具：ilspycmd 11.1.0（dotnet 全局工具，已装）
+    命令：ilspycmd -p -o <输出目录> Assembly-CSharp.dll
+    结果：40 秒产出 12698 个 .cs 文件
+          1682 处反编译失败（混淆导致的 ILSpy 解析错误，主要是 obfuscated 方法）
+    产物：<中间产物目录>\GF2_asm\src\
+    （这是目前唯一能"读客户端逻辑"的通道，比 Lua 那条路现实得多）
+
+  三、从反编译源码里已确认的信息
+    1) 错误码表：IOJGLBFCNMO.cs
+         public const uint CHIICDKCGPP = <数字>u;   ← 就是日志里的 -<数字>
+         （同类还有 1000002..1000xxx 一整屏，是协议/业务错误码枚举）
+       注意：常量名被混淆，全项目搜不到直接引用点（按数值写死/或被内联）
+    2) 战斗预加载状态机枚举（3 个类都有）：
+         FLDGPCACCNO / FLFEGLHMLPG / MELPGIHFAGA
+         成员：PreloadCutscene, WaitPreloadCutscene, ..., WaitForReConnectLogic,
+               WaitForReConnectView / WaitForReConnect
+         与客户端日志 "### m_PreloadStep = WaitForReConnectLogic" 完全对应
+    3) 战斗相关类（类型名可读，成员被混淆）：
+         OfflineBattle（离线战斗！）、GF2.Battle.Replay.ReplayFile、
+         LTBBattleStart、BattleSimPanel、EmbattleCameraController …
+       OfflineBattle 的方法体反编译全是错误（重混淆），只能靠类型/字段推断
+
+  四、排除的路径（这轮又少两条）
+    · Lua 不在 AssetBundles 里：498 个完整明文包里 TextAsset 只有 5 个
+      （SystemText/ExampleText/AdvErrorMsg/ErrorMsg/Env.config），无任何 lua
+    · 磁盘 .bytes 数据目录（Table 1976 / ClientRes 1110 / BinFile 1287）里
+      只有 "XLua" 字样出现在 Assembly-CSharp.dll.bytes 等程序集里，无 .lua 脚本
+    · 客户端目录全盘搜 Main.lua.txt / MainFix.lua：**只有内存里出现过**，
+      磁盘上找不到（说明 Lua 脚本是运行时从别处生成/注入，或根本不用 Lua 跑战斗）
+
+  五、下一步（优先级已重排）
+    1. ★ 反编译 NetworkProtocol.dll + Common.dll，找 StageInto / StageReady 的处理链，
+       对照服务端 NTRSimulator 已实现的 handler，看客户端在"进场景后"还等什么
+    2. 在 Assembly-CSharp 里按类型名找战斗入口（OfflineBattle / LTBBattleStart /
+       BattleSimPanel），看它们依赖哪些服务端字段（这些类名可读，值得逐个看字段）
+    3. Ghidra 静态分析 GameAssembly（备用，成本高）
+
+  六、给上游的增量说明（相比第 11 轮）
+    · 编队 12 组 / HandleStageStart / SDK 反向代理 三项已可独立提 PR（第 11 轮已列）
+    · 新增建议：把"客户端程序集可反编译"这条写进文档
+      （路径 + ilspycmd 命令 + 产物位置），后来人不用再摸索
+
+================================================================
+第 13 轮 · 2026-11-11 02:10（★ 抓到 Unity 原始日志，定位到真正的黑屏根因）
+================================================================
+
+【一、新拿到的三把钥匙】
+
+  1) Unity 原始日志（Player.log）—— 不用反编译就能看堆栈
+     路径：<本机路径>
+     说明：游戏会自己指定日志路径，命令行 -logFile 被忽略（试过，不生效）
+          但默认日志一直有写，直接读就行
+
+  2) 带日志启动器 gf2_launch.exe（自己写的，替代 launcher.exe）
+     作用：CreateProcess(GF2_Exilium.exe, "-logFile ...", 挂起)
+           → 远程 LoadLibrary(daiyan.dll) 注入
+           → ResumeThread
+     为什么要自己写：客户端重定向不是走 hosts（hosts 里根本没有 GF2 条目），
+                    而是 launcher.exe 注入 daiyan.dll 在进程内完成；
+                    而 launcher.exe 不转发命令行参数
+     源码：<工具目录>\tools\luahook\gf2_launch.c
+     坑：中文路径传给 CreateProcessA 会变乱码 → 游戏拒绝写日志
+         （日志路径必须纯 ASCII，例如 <GF2根目录>\logs\unity.log）
+
+  3) 服务端消息屏蔽开关 GF2_BLOCK_MSGS
+     实现：NTRSimulator.Common\Networking\Connection.cs 的 SendAutoEncrypted 里
+           环境变量 GF2_BLOCK_MSGS="20029,23017" → 发送前按 msgId 过滤
+     用途：登录批次里某条消息让客户端分发崩溃时，用它二分定位
+
+【二、黑屏根因（这次是实证，不是推测）】
+
+  客户端 Player.log 关键片段：
+      System.ArgumentOutOfRangeException: Specified argument was out of the range of valid values.
+      Parameter name: index
+          AHCDKCMNJPJ:FLIFAHIDFLH(UInt16, IMessage)        ← 客户端消息分发入口
+          BCJEBHDBBBFM:FGFADKDCIFD(UInt16, Int32, IMessage)
+          BCJEBHDBBBFM:NKPLJHEGJFK(KNJPCNKBLIP)
+  服务端同一时刻：
+      SocketException (10053) 客户端主动断开
+      Handler LoginHandler.HandleLogin failed
+
+  ⇒ 结论：客户端在【登录回复的批次】里分发某条消息时下标越界并抛异常，
+          随后主动断开连接；连接断了之后，"进副本 → start stage" 必然失败
+          于是日志里出现 " start stage , ret code  -<数字>"
+  ⇒ 也就是说：**-<数字> 是"连接已断/会话不存在"的下游表现**，
+     不是战斗逻辑本身的错误。之前一直在战斗侧找原因，方向错了。
+
+  其它线索（同一条日志里）：
+      · Addressables.InvalidKeyException: No Location found for Key=ED-56-BB-62
+        （ED-56-BB-62 形如 MAC 地址，被当成 Addressables 的 Key 去加载 → 报错）
+      · RedPoint Manager Not Register RedPoint Info : Main:MainGacha
+      · NodeTree must be instantiated using ScriptableObject.CreateInstance
+      这几条是"能继续跑"的错误，优先级低于上面的分发崩溃
+
+【三、当前解密/取证方法总表（最新版，可直接复用）】
+
+  A. 侧载执行代码（不注入、不 UAC、不触发校验）
+     文件：游戏根目录 xinput1_3.dll（自己的代理，67 KB）
+     能力：DllMain 起线程 → 钩 NEP2/GameAssembly 的导入表
+
+  B. 抓解密后的 AssetBundle
+     钩：Kernel32!ReadFile / MapViewOfFile / CreateFileW / CreateFileMappingW
+     关键：长度用 CreateFileMappingW 的 GetFileSizeEx 精确值；
+           不要用 VirtualQuery 的 RegionSize（映射视图只报 32KB，会把包截断）
+     产物：<中间产物目录>\GF2_lua\read_<n>_<len>.bundle
+     实测：498 个包、最大 36.5 MB、可被 UnityPy 正常解析 282 个
+
+  C. 客户端 C# 程序集（可从磁盘直接反编译，无需解密）
+     位置：…\LocalCache\Data\ClientRes_Windows\4.0.5136\Codes\*.dll.bytes
+     主力：Assembly-CSharp.dll.bytes（24.79 MB，真 .NET 程序集）
+           NetworkProtocol.dll.bytes（11.35 MB，StageInto x7）
+     工具：ilspycmd 11.1.0（dotnet 全局工具，本机已装）
+     命令：ilspycmd -p -o <out> Assembly-CSharp.dll        （全量，慢，产出 1.2 万文件）
+           ilspycmd -t ProtoCsmsg.StageOther NetworkProtocol.dll   （单类型，极快）
+     ⚠ 机械硬盘别做全量反编译；用 -t 单类型 / -l c 只列类型名
+
+  D. 错误码表
+     IOJGLBFCNMO.cs: public const uint CHIICDKCGPP = <数字>u;  （1000xxx 一整屏）
+
+  E. 排除过的方向（不要再走）
+     · AES：NEP2 内联 AES-NI（aeskeygenassist/0x1545A95 等），对 bundle 解密 0 命中
+     · Lua：498 个明文包里没有 lua；磁盘上搜不到 Main.lua.txt（只在内存出现过）
+     · 内存整包：内存里的 "UnityFS" 多为假头（后面跟 hash）
+     · 改 Plugins 里的 DLL：触发完整性校验 → 重下 28.61 GB（已止损）
+
+【四、下一步（按优先级）】
+
+  1. 用 GF2_BLOCK_MSGS 二分登录批次，找出让客户端分发的那个 msgId
+     当前已屏蔽：20029(SC_DarkZoneStep1RoomBasicInfo) + 23017(SC_HotfixNoticeSync)
+     候选还有：10102(SC_Record)、20063(SC_PlayerStatusCounterSync)
+  2. 定位后修那条消息的 payload（多半是字段缺失/类型不符，被客户端当数组下标用）
+  3. 连接不再断 → 再回头看副本；预期 -<数字> 会自然消失
+  4. 若仍失败，再用 Player.log 的新堆栈继续定位（现在有完整的客户端堆栈了）
+
+【五、给上游的补丁清单（累计）】
+
+  1. 编队 12 组（CustomFormationHandler.cs）              ✅ 可提
+  2. HandleStageStart → SC_StageReady                     ✅ 可提
+  3. SDK 资源反向代理（SDKController.CatchAllGet）        ✅ 可提
+  4. GF2_BLOCK_MSGS 诊断开关（Connection.SendAutoEncrypted） ✅ 可提（对排查有用）
+  5. 文档补充：Player.log 路径、gf2_launch.exe 原理、ilspycmd 单类型反编译技巧
+     （这三条能让后来人少走好几天弯路）
+
+================================================================
+第 14 轮 · 2026-11-11 02:35（一次失败实验 + 一条必须记住的红线）
+================================================================
+
+  ★ 红线：绝对不要改 StaticConfig.AbResourceVersion
+    实验：把服务端 AbResourceVersion 从 4.0.5136.13967.27078
+          改成客户端本地值 4.0.5136.15157.29186，想解决"场景脚本 missing"
+    结果：客户端立刻开始"修复式重下" 28.61 GB（另有 125 MB 已下）
+          游戏内版本显示 Ver:4.0.5136.13967.27078.2988（仍是旧值，来自缓存）
+    处置：已把值改回 13967.27078、重编、重启服务端、清掉 5 个 .download 碎片(75 MB)
+    结论：这个字段只管"客户端要不要重下资源"，不改战斗行为；
+          它一改就触发全量重下，代价 28.61 GB，必须当成红线
+
+  附带确认的两件事（有用）
+    1) 发布项目搞错了半轮：真正的主机是 NTRSimulator\NTRSimulator.csproj
+       （只有它引用 SDKServer）。之前一直发布 NTRSimulator.GameServer，
+       导致 NTRSimulator.SDKServer.dll 从未更新、const 内联值一直是旧的。
+       以后改 StaticConfig 这类 const：清 Common+SDKServer 的 obj/bin，再发布主机项目。
+    2) "referenced script ... is missing!"（_LuaEnvController / Main Camera /
+       Canvas / Poco）确实出现在战斗场景加载后，但和资源版本无关；
+       疑似该场景的脚本绑定在客户端这边本来就不完整（或依赖服务端下发的战斗数据）
+       待后续用 Player.log + 服务端字段对照继续查。
+
+  当前状态（回滚后）
+    服务端：AbResourceVersion=13967.27078（原值），GF2_BLOCK_MSGS=20029,23017 生效
+    客户端：资源 76.91 GB 完好，.download 碎片已清
+    表现：能登录、能进副本、仍黑屏（-<数字>）
+
+================================================================
+第 15 轮 · 2026-11-11 02:45（战斗场景"脚本全 missing"，与关卡无关）
+================================================================
+
+  一、这轮做的实验与结论
+
+    1) 教学完成表补 10144 / <数字>（LobbyHandler.HandleLobbyTutorialInfo）
+       结果：客户端仍发 CS_StageStart{stcStageId=10144}，行为不变
+       ⇒ 教学标志不影响进关
+
+    2) 剧情已看表（AvgDuoHandler.HandleGetLobbbyAvgDuoInfo）
+       把 1-x 的战前剧情 id（关卡 id*100+11，例 10144 → <数字>）标成已看
+       结果：仍黑屏，`start stage → -<数字>` 不变
+       ⇒ 不是"剧情是否已看"决定的
+
+    3) 关卡通关记录（StageHandler.HandleStageRecord case 11）
+       补了 10144~10150 的 FirstPassTime/CompleteChallenges
+       结果：客户端里 1-4 以后**全部显示已通关**（用户已确认），
+             但随便点哪一关都还是黑屏
+       ⇒ ★ 关键结论：黑屏与关卡无关，是**战斗场景本身起不来**
+
+    4) 服务端日志确认：
+       · 客户端没有向服务端请求任何程序集（Codes/*.dll.bytes 是本地加载的）
+       · HTTP 全是 200（client_res_v1 / gatelist / dig_bak / index…）
+       · CS_GetAvgInfo → 我们回 SC_GetAvgInfo{CharacterAvgs={}}（空）
+       · 登录批次里仍有 ArgumentOutOfRangeException（客户端分发），但进程没断
+
+  二、当前对黑屏的判断（按证据排序）
+
+    证据 A：Player.log 里 35 条
+        "The referenced script on this Behaviour (Game Object '_LuaEnvController') is missing!"
+        "… 'Main Camera' …" / "… 'Canvas' …" / "… 'CM vcam1' …"
+        "The referenced script (UniversalAdditionalCameraData) is missing!"
+        同时日志有 "DOTWEEN Tween startup failed (NULL target/property)"
+    证据 B：客户端日志顺序
+        PreloadStep → WaitForReConnectLogic/View → [Battle] Load Scene Task(118/119/120)
+        → [Tutorial] stageId:10144 + type:EMBATTLE_BEFORE => AvgId:<数字>
+        → SceneSystem SwitchVisible:Battle → " start stage , ret code -<数字>"
+        → ChangeSceneLoadingPanel 关闭（=黑屏）
+    证据 C：换了关卡（1-4~1-10 全解锁）后现象完全一致
+
+    ⇒ 战斗场景的 MonoBehaviour 脚本引用**全部解析失败**（连 _GameRoot/_LuaEnvController
+      这种核心对象都 missing），说明客户端加载战斗场景时，脚本程序集/脚本映射没有就绪。
+      这与服务端下发的关卡、教学、剧情都无关，属于客户端侧装配问题：
+        · 要么战斗场景包与当前客户端程序集版本不匹配（但我们没改过客户端资源）
+        · 要么该场景依赖 HybridCLR/热更程序集（Assembly-CSharp.dll.bytes_HUDll.u 148 MB）
+          在纯净环境下加载失败
+        · 要么它依赖某个服务端初始化消息（我们没实现）
+
+  三、方法沉淀（这轮新增）
+
+    · 判断"黑屏是不是我们的锅"的最快方法：把侧载 DLL 撤掉再复现
+      （实测撤掉后 missing 依旧 ⇒ 不是钩子干扰）
+    · 判断"黑屏跟关卡有关吗"的最快方法：把 StageRecord 里所有关卡标成通关，
+      让用户随便点（实测无关）
+    · 查客户端装配问题看 Player.log 的 "referenced script ... is missing"，
+      比看 C# 异常栈更直指本质
+
+  四、状态
+    编队     ✅ 12 组可用
+    关卡     ✅ 已全部解锁（StageRecord 补到 1-10；需要可再扩）
+    副本     ❌ 任意关卡都黑屏（战斗场景脚本 missing）
+    结算     ⛔ 未做
+
+  五、遗留判断（下次接手从这里开始）
+    1. 战斗场景包（scene bundle）里的 m_Script 引用指向哪个程序集？
+       —— 可以用 UnityPy 解析场景包，读 MonoBehaviour 的 m_Script PPtr，
+          再看对应 MonoScript 的 assembly 字段（Assembly-CSharp / 某个 HUDll）
+    2. 若是 Assembly-CSharp：检查客户端是否真的加载了
+       Assembly-CSharp.dll.bytes（24.79 MB）而不是 _HUDll.u（148 MB）
+    3. 若是某个初始化消息缺失：对照 NetworkProtocol 里 Stage 相关的所有 SC_*，
+       逐个看哪些是我们从来没发过的
+
+================================================================
+第 16 轮 · 2026-11-11 03:10（★ 找到 -<数字> 的确切出处：start stage 的响应被解析成 ret code）
+================================================================
+
+  一、把客户端日志按 UTF-16 整段解码后（关键技巧，之前用 ASCII 正则只能抓到碎片），
+      战斗段原文如下（log_<数字>_last.bin，全部实测）：
+
+      [Battle] Load Scene Task:FHEBFLFFIIL(102) Start
+      battle scene onenter, stage type:NormalStage          ← 普通关，不是教学
+      The referenced script (pb_Entity) / (pb_Object) ... missing!
+      The referenced script on this Behaviour (Game Object 'PlaneForUse') ... missing!
+      ### m_PreloadStep = PreloadCombatGrid  → … → WaitForReConnectView → 9
+      [Tutorial] stageId:10144 + type:EMBATTLE_BEFORE => AvgId:<数字>
+      SceneSystem SwitchVisible:Battle
+      [UI - Hide] ChangeSceneLoadingPanel
+      ★ 收到 start stage 消息, ret code 为 -<数字>
+      [UI - Close] ChangeSceneLoadingPanel                 ← 黑屏
+      ----> LoginStateBase NetWorkError: ReceiveError
+      ----------> ConnectClose                             ← 连接被客户端主动断开
+
+  ⇒ -<数字> 不是服务端字段，也不是关卡/教学/剧情引起的，
+    而是**客户端在 `收到 start stage 消息` 之后解析出来的 ret code**
+    （客户端自己有错误码表 IOJGLBFCNMO.CHIICDKCGPP = <数字>u，
+      取负就是 -<数字>）。随后客户端直接拆连接。
+
+  二、排除了两个"假凶手"（很重要，别再回头查）
+     1) pb_Entity / pb_Object / PlaneForUse / CM vcam1 / UniversalAdditionalCameraData
+        这些 missing script 是 **ProBuilder / Cinemachine 编辑器脚本**，
+        release 包里本来就不带 → 属于正常噪音，不是黑屏原因
+     2) StcTableDataMap[...]表ID:xxx找不到（CEEHBODPKDO/148、FKJGJOBHPKE/50、
+        OKPIICKGHDD/1,2,4、JGIFLMNNNBJ/3005,93005 …）
+        每次会话都一样，属于客户端表缺项噪音，也不是黑屏原因
+
+  三、消息 id 已双端对齐确认
+     客户端 NetworkProtocol.dll 反编译（np_src，4024 个文件）里：
+        FLEBMOMGGNF.cs:
+           [OriginalName("MSG_CS_StageStart")]  MsgCsStageStart = 10304
+           [OriginalName("MSG_SC_StageReady")]  MsgScStageReady = 10316
+           [OriginalName("MSG_SC_StageForceExit")] MsgScStageForceExit = 10319
+           [OriginalName("MSG_CS_StageResultConfirm")] MsgCsStageResultConfirm = 10323
+     与服务端 MsgId 完全一致 ⇒ **不是消息号错了**
+     ⇒ 问题在 **10316 的 payload 结构/语义**：我们发的是 {timestamp: long}，
+        而客户端拿到手后给出了 ret code -<数字>
+
+  四、下一步（最锋利的一刀）
+     客户端生成类的类名被混淆，但 proto 描述符里保留了 OriginalName。
+     要找 10316 真正的消息结构，两条路：
+       1) 在 Common.dll（3.17 MB，之前看到 StageInto x4）里找
+          "StageStart"/"StageReady" 的生成类与字段定义
+       2) 运行时 dump 描述符：写一个侧载 DLL，反射遍历
+          Google.Protobuf 的 FileDescriptor 集合，打印所有 message 名与字段
+          （可行，因为客户端的 xlua/侧载通道已经验证能用）
+     拿到字段后，把 SC_StageReady 的 payload 按客户端期望重填（很可能有个 ret/code 字段，
+     我们没填 → 客户端读到默认/越界值 → -<数字>）。
+
+  五、方法沉淀
+     · 客户端日志是 UTF-16，必须整段 decode('utf-16-le') 再抽文本；
+       只用 ASCII 正则会得到一堆乱码（这一坑卡了半轮）
+     · 日志文件按会话滚动：当前会话 log_<时间>.bin_cN，上一次会话 log_<时间>_last.bin
+       战斗段一般在 _last.bin 里
+     · "收到 X 消息, ret code 为 Y" 这种日志 = 客户端对**服务端回包**的解析结果，
+       定位这类问题要直接对齐回包的 proto 字段，而不是去查关卡/剧情/资源
+
+================================================================
+第 17 轮 · 2026-11-11 03:30（三个协议实验，把 -<数字> 逼到只剩一个解释）
+================================================================
+
+  实验 A：SC_StageReady 改发「空 payload」的 10316 包
+    做法：connection.SendRawMainMessageHexStream("<数字>" + "4C280000")
+          （seq=0，bodyLen=4，msgId=10316，payloadLen=0）
+    结果：客户端不再报 -<数字>，改成
+          "WeakNet ReqId 182 10304" 每秒重试 + UIComNetworkWaitDialog 转圈
+          → 用户看到：先黑屏 → 转圈 → 一直等
+    ⇒ 空 payload + 错序号 = 客户端不认这条回包，请求挂起
+
+  实验 B：SC_StageReady 的 Timestamp 改成 0（结构不变、序号正确）
+    结果：用户看到「直接黑屏，没转圈」，
+          日志 "收到 start stage 消息, ret code 为 -<数字>" 与之前**完全一样**
+    ⇒ 客户端**不读 payload 的数值**：0 和 19 位毫秒时间戳得到同一个错误码
+    ⇒ -<数字> 不是字段解析出来的，是客户端自己的判定结果
+
+  实验 C（顺带验证）：反编译 Common.dll（2894 个文件）
+    结果：只有无关枚举 StageStart=1002 / StageStartFront=1003，
+          没有 10316 的消息类；NetworkProtocol 里也搜不到 OriginalName 字段属性
+    ⇒ 客户端的 protobuf 生成类类名/字段属性全被混淆，静态读不出 schema
+
+  一、现在对 -<数字> 的唯一解释
+     · 消息号对（10316 双端一致，客户端确实收到并处理）
+     · 序号对（实验 B 没出现重试/转圈，说明请求被正常应答）
+     · payload 内容无关（实验 B 证明）
+     ⇒ 客户端在**收到 SC_StageReady 之后**，还要拿它去驱动一个后续动作，
+        那个动作的前置条件不满足，于是它自己返回 -<数字> 并断开连接。
+        最可能的前置条件是：
+           (a) 场景/战场资源（bundle）在客户端侧找不到对应 key（Addressables）
+           (b) 客户端本地缺少"战斗会话"上下文（例如需要 SC_StageInto 之类的后续包）
+           (c) 战斗场景 bundle 里 MonoBehaviour 依赖的程序集类没加载
+
+  二、最快的下一步（三选一，按成本排序）
+    1) 【推荐】运行时 dump protobuf 描述符
+       客户端 GameAssembly 导出 240 个 il2cpp_* 函数，可用我们的侧载 DLL 调
+       il2cpp_domain_get / il2cpp_class_from_name 遍历 Google.Protobuf 的
+       FileDescriptor，打印 10316 的真实 message 名与字段 —— 一次就能看清契约
+    2) 试着在 StageReady 之后再补发 SC_StageInto(?) 观察客户端反应
+    3) 用 UnityPy 解析战斗场景 bundle，读 MonoBehaviour 的 m_Script 指向哪个 assembly，
+       把"脚本 missing"这条线彻底证实或排除
+
+  三、当前可交付状态
+    编队     ✅ 12 组
+    关卡     ✅ 全部解锁（StageRecord 补 10144~10150）
+    副本     ⚠️ 能进战斗场景、能过预加载 9 步，卡在 StageReady 之后的本地初始化
+    日志体系 ✅ Player.log + 客户端 UTF-16 日志 + 服务端日志 三路对齐，已有成熟套路
+
+================================================================
+第 18 轮 · 2026-11-11 03:45（客户端 SC_StageReady 的真实结构：可能根本没有 timestamp）
+================================================================
+
+  一、新证据
+    1) global-metadata.dat（17.1 MB，IL2CPP 元数据）里搜不到
+       StageReady / timestamp / MSG_SC_StageReady / stageId
+       ⇒ 协议类不在 IL2CPP 元数据里，而在托管程序集（HybridCLR 热更）
+
+    2) NetworkProtocol.dll（11.35 MB）原始字节里：
+         "MsgScStageReady"       出现 2 次（0xA7AE35 / 0xB1A37C，都在消息名表里）
+         "MSG_SC_StageReady"     出现 1 次
+         "StageStart"            出现 14 次
+         "stageId"               出现 1 次（0xA57A52）
+         ★ "timestamp"            出现 **0 次**
+       ⇒ 客户端侧的 SC_StageReady **很可能根本没有 timestamp 字段**
+         （上游 NTRSimulator 的 SC_StageReady{Timestamp} 是猜的/来自旧版本）
+       ⇒ 反过来说：我们发什么 payload 都不影响，客户端只认"收到了这条消息"
+
+  二、把三个实验串起来得到的完整判断
+     · 实验 B（Timestamp=0）实际上等于**发送零长度 payload + 正确序号**，
+       客户端依然报 "收到 start stage 消息, ret code 为 -<数字>"
+     · 实验 A（空 payload + 错误序号 seq=0）则变成每秒重试 + 转圈
+     ⇒ 结论：**消息本身没问题（号对、序号对、payload 无所谓）**；
+        -<数字> 是客户端在"收到 StageReady 之后、真正进战斗之前"那一步
+        自己判定的失败，并且它会主动断开连接。
+
+  三、这一步可能是什么（按可能性排序）
+    1) 客户端要用 SC_StageReady 里某个我们根本没发的字段（但 payload 无关实验很矛盾，
+       除非该字段在客户端里是"必填且缺失即失败"，而我们发的零长度让它读默认值 0 → 失败）
+    2) 客户端随后要本地加载战斗场景的 Addressables key，本机资源里没有那个 key
+       （登录期已有 InvalidKeyException: No Location found for Key=ED-56-BB-62 的先例）
+    3) 客户端要建立"战斗会话"，需要另一条消息（如 SC_StageInto / SC_StageOp）先到
+
+  四、下一步（明确的两条路，已无法再靠试错）
+    A. 运行时把客户端的 protobuf 描述符 dump 出来
+       —— 客户端是 HybridCLR（托管程序集），可以写一个托管 DLL 用
+          Google.Protobuf.Reflection 反射遍历 FileDescriptor，把 10316 的
+          message 名与字段名打印出来；注入方式沿用"侧载 xinput1_3.dll → 调 il2cpp 初始化托管"
+          或直接用 HybridCLR 的热更入口
+    B. 用 UnityPy 解析战斗场景 bundle，读每个 MonoBehaviour 的 m_Script 指向，
+       确认"脚本 missing"是否真的影响战斗（而不是 ProBuilder 噪音）
+
+  五、当前可交付状态（不变）
+    编队 12 组 ✅ / 关卡全解锁 ✅ / 副本能进场景但卡在 StageReady 之后 ❌ / 结算未做 ⛔
+    三路日志对齐套路 ✅（Player.log、客户端 UTF-16 日志、服务端日志）
+
+================================================================
+第 19 轮 · 2026-11-11 04:00（客户端程序集被 IL 保护，静态取描述符这条路封死）
+================================================================
+
+  一、尝试与结果（全部实测）
+    1) 在 NetworkProtocol.dll 里找 Google.Protobuf 描述符
+       · 4023 个反编译文件里：MessageParser 出现于 2879 个、FileDescriptor 147 个
+         ⇒ 确认是标准 protoc 生成的 C# 代码
+       · 但：FromBase64String 出现 **0 次**，长 base64 字面量 **0 个**
+    2) 直接扫原始 DLL 里的 base64 串并解码
+       · ASCII 候选 79 个、UTF-16 候选 1929 个
+       · 只解出 3 个无关枚举名（EventStageStart 等 45 字节）
+       · 按文件顺序拼接 40 个一串再解码：**解不出 StageReady**
+    3) 用 ilspycmd --ilcode 看单类型 IL
+       · IL 本身是坏的：方法开头就是 `bne.un.s IL_001c` / `bgt.un IL_<数字>` /
+         `.emitbyte` 这类无效序列
+       ⇒ **客户端程序集用了 IL 级保护器**（opcode 被替换/加密，运行时靠自定义加载器还原）
+
+  二、结论
+     · 静态（反编译 / 字节码 / base64 / 元数据）这条路**到此为止**：
+       协议 schema 只在运行时才以真实对象存在
+     · 要拿 SC_StageReady 的真实字段，只能**运行时反射**：
+       客户端是 HybridCLR（托管程序集在运行时注册进 il2cpp），
+       可以用侧载 DLL 调 GameAssembly 的 240 个 il2cpp_* 导出：
+         il2cpp_domain_get / il2cpp_class_from_name("NetworkProtocol", <混淆类名>)
+         → il2cpp_runtime_invoke 取 MessageDescriptor
+         → 读 descriptor 的字段列表
+       或者更直接：il2cpp_runtime_invoke 调用消息类的 Descriptor 属性，
+         再遍历 Google.Protobuf.Reflection.MessageDescriptor 的 Fields
+     · 这是一个**中等规模的新工程**（不是一两轮能收尾的）
+
+  三、如果继续走运行时，建议的顺序
+    1. 侧载 DLL 里先做 il2cpp 初始化与类枚举，能列出 NetworkProtocol 命名空间下的类名
+    2. 用类名 + 字段数量/类型，匹配出哪个类对应 10316（可与已知服务器 proto 结构对照）
+    3. 反射它的 Descriptor，打印字段名与字段号
+    4. 按字段号回填 SC_StageReady（很可能需要 ret/code + 战场/会话相关字段）
+    5. 再进副本验证
+
+  四、当前状态（可随时接手）
+    服务端     已发布到 <GF2根目录>\Server（主机项目 NTRSimulator\NTRSimulator.csproj）
+               AbResourceVersion = 4.0.5136.13967.27078（红线：不要改）
+               GF2_BLOCK_MSGS=20029,23017 生效
+               StageHandler.HandleStageStart 目前是**实验版**（Timestamp=0）
+               要恢复：把 Timestamp 改回 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+    编队       12 组可用
+    关卡       全部解锁（StageRecord 补 10144~10150）
+    副本       能进战斗场景，卡在 StageReady 之后的本地判定（ret code -<数字>）
+    工具链     侧载 xinput1_3.dll / 抓解密 bundle / ilspycmd / 三路日志 —— 都已成型
+
+================================================================
+第 20 轮 · 2026-11-11 04:40（运行时挖 proto 描述符：已能看到描述符本体，但网络消息那份还没定位到）
+================================================================
+
+  一、这一轮的进展（都是真东西）
+
+    1) il2cpp 反射这条路走不通（实证）：
+       GameAssembly.dll 里 240 个导出**没有一个是 il2cpp_***
+       （导出样例只有 CloseZStream / CreateZStream / ReadZStream / DllCanDisable…）
+       ⇒ 这是 HybridCLR 版，il2cpp API 被裁掉，il2cpp_class_from_name 之类无法调用
+
+    2) 客户端字符串确实是**运行时才解密**的：
+       静态文件里 "timestamp" 0 次、base64 描述符找不到、IL 是坏的（.emitbyte/bgt.un 乱序）
+       但内存里能直接看到明文的 base64 描述符，例如：
+         CiFiYXR0bGVfc3luYy9pbnRlcmFjdGl2ZV9vYmoucHJvdG8SD2JhdHRsZV9zeW5jX21zZyKTAwoc...
+       （解码 = battle_sync/interactive_obj.proto 的 FileDescriptorProto，
+         里面能读到 GridId / StageSide / InteractionID / LifeRoundCount 等字段名）
+
+    3) 已经能完整解出若干 proto：
+       把内存里的 base64 分片按"地址相邻"分组、拼接、base64 解码，成功得到：
+         · battle_sync/interactive_obj.proto    → 853 字节，字段 StageSide / GridId / …
+         · battle_sync/delta_data.proto + cover + role → 6730 字节，
+           含 StrongHoldStageSideChanged / RoleStageSideChanged 等
+         · google/protobuf/*.proto 若干
+       ⇒ 说明**方法可行**：内存里确实存在可解码的 FileDescriptorProto
+
+    4) 但**网络消息那批 proto（含 MsgScStageReady）还没定位到**
+       · 用探针 MsgScStageReady 命中的 0x1D5E30E0000 / 0x27FEE9D0000 两个 116MB 区
+         里只有 ASCII 的消息名表，没有描述符
+       · 用探针 base64("MsgScStageReady") = TXNnU2NTdGFnZVJlYWR5 命中 3 处，
+         但 ±8KB 窗口里没有 base64 流（说明是别的上下文，或者描述符在别的页）
+
+  二、结论与下一步
+     · 方向验证成功（内存里有明文描述符、可解码），只是还没找到"网络消息"那一份
+     · 下一步建议（按成功率）：
+       1) 用 base64("MsgCsStageStart") = TXNnQ3NTdGFnZVN0YXJ0 作为探针再搜，
+          并用大 pad（24MB）抓该区，再看里面有没有成片的 base64
+       2) 或直接扫全内存找 "Cg" 开头的长 base64 串（每个 .proto 都以 Cg 开头），
+          把解出来的 message 名做索引，找含 MsgSc 的那个
+       3) 如果仍未命中：网络消息可能用的是**自定义序列化**（不是 Google.Protobuf 描述符），
+          那就只能从消息类的方法体逆（IL 被保护，需先脱保护）
+
+  三、当前状态
+    服务端   已恢复稳定版（Timestamp = 当前毫秒），AbResourceVersion 未动
+    侧载 DLL 已养成"多用途工具"：
+             抓解密 bundle / 内存字符串搜索(memfind) / AES 断点 / il2cpp dump(受限)
+    编队 12 组 ✅ / 关卡全解锁 ✅ / 副本：能进战斗场景，卡在 StageReady 之后 ❌
+
+================================================================
+第 21 轮 · 2026-11-11 05:20（描述符猎取的最终结论：网络消息没有 FileDescriptorProto 可解）
+================================================================
+
+  一、这轮做完的完整链条（全部实测）
+
+    1) 大厅（登录后主界面）搜 base64("MsgCsStageStart") = TXNnQ3NTdGFnZVN0YXJ0
+       → 0 命中（网络消息相关数据还没进内存）
+    2) 点开【副本】停在关卡列表后再搜
+       → 命中 1 处：0x2D1149FC670，所在区 0x2D1149D7000（约 180KB）
+    3) 用 memx（探针同上，pad 2MB）把该区整块抓下来（4.18 MB）
+    4) 解析结果（关键）：
+       · 该区里 base64 片段共 241 段，但**最长只有 48 段连续**
+       · 含探针的那一段单独 base64 解码 = "MsgCsStageStart" + 少量尾巴（149 字节）
+         ⇒ 它在内存里是**独立的 base64 文本（多半是哈希表的 key）**，
+           不是 FileDescriptorProto blob
+       · 整区里没有任何 >=40 字符的连续 base64 长串
+       · 另一个 4.02MB 区（0xF7861DB000）同样 0 段长 base64
+    ⇒ 结论：**网络消息这一批没有以 FileDescriptorProto(base64) 形式存在**
+       （对比：battle_sync/*.proto 那批**有**，而且能完整解码出字段名，
+         证明"有描述符的话一定能解出来"）
+
+  二、由此得到的判断
+     · 客户端对 battle_sync 这类数据协议用 Google.Protobuf 描述符
+     · 对“网络消息”（MsgCs*/MsgSc*）这一层，很可能是：
+       (a) 代码里手写序列化（生成的类但描述符被剥掉/不加载），或
+       (b) 用 HybridCLR 解释执行、描述符在元数据里但被加密，运行时按需解密且不常驻
+     ⇒ 想拿 SC_StageReady 的字段表，静态/内存两条路都已到头
+     ⇒ 剩下的选择只有：
+        1. 脱 IL 保护器（客户端程序集被替换 opcode + 字符串加密）
+        2. 用“协议试错”继续逼近：把常见字段组合（ret/code/stageId/…）按字段号
+           逐个试，用客户端日志里的 ret code 变化当反馈
+        3. 放弃字段级还原，转做“绕开”：不深究 StageReady，而是让客户端不进战斗前的
+           那套本地校验（例如改走其它玩法入口）
+
+  三、本轮新增的可复用工具（都在 12_GF2/tools/luahook）
+    · gf2_memfind.c  进程内字符串搜索（UTF-8/UTF-16），带“跳过自身栈/自身模块”过滤
+                     触发：<out>\_memfind_target.txt + <out>\_memfind_now.txt
+                     产物：_memfind_hits.txt + memdump_<addr>.bin
+    · 抓描述符区4.bat  memx 封装（探针 + pad 2MB），抓命中区整块
+    · 踩坑：搜自己 —— 探针字符串本身就写在目标文件里，会被自己命中；
+            必须过滤“自身栈范围 + 自身模块范围”，否则结果全是假阳性
+
+  四、当前状态（交接点）
+    服务端    稳定版：Timestamp=当前毫秒；AbResourceVersion 未动；GF2_BLOCK_MSGS 生效
+    编队      12 组可用
+    关卡      全解锁（StageRecord 补 10144~10150）
+    副本      能进战斗场景、能过 9 步预加载，卡在“收到 StageReady 之后的本地判定”
+              ret code -<数字> → 客户端断连接 → 黑屏
+    工具链    侧载 DLL（抓解密 bundle / 内存搜索 / AES 断点 / il2cpp dump 尝试）
+              memx + memfind + ilspycmd + 三路日志对齐 —— 全部成型并文档化
+    文档      本文件 71 KB 左右，含 1~21 轮完整实验记录与结论
+
+================================================================
+第 22 轮 · 2026-11-11 05:50（协议试错也走不通：raw 包不被当作回包）
+================================================================
+
+  一、按“直接抄序列化逻辑”的思路先查了源码（结论：被保护，抄不到）
+     NetworkProtocol（2879 个 protobuf 生成类）：
+        CodedInputStream 2984 次、MergeFrom 8952 次、WriteTo 5968 次
+        但 ReadInt32/ReadInt64 调用 **0 次**
+        WriteTo / MergeFrom 方法体 **全部是 ILSpy 错误文本**
+     更关键：ReadIL / ReadBlock / ReadInstructions / ReadAndDecodeMetadataToken
+        出现在 193 个文件里
+     ⇒ NetworkProtocol 自带 **IL 解释器**（保护器本体），
+        方法体是加密的，运行时才解密交给解释器执行
+     ⇒ “从 WriteTo 抄字段顺序”这条路静态走不通
+
+  二、于是做了「协议试错」实验（利用客户端会重试 StageStart 的特性）
+     · 在 Connection 加了 SendRawPacket(msgId, payload)
+       （主消息格式 seq(2)+bodyLen(2)+[msgId(2)+payloadLen(2)+payload]，
+         用当前 sendSequence 填 seq）
+     · HandleStageStart 增加试验模式 GF2_STAGE_TRY="msgId:hex,..."：
+       一次请求后按 700ms 间隔连发所有候选（13 种）
+     · 候选覆盖：10316 空包 / field1..field4 置 0 / field1/field2 置空 bytes /
+       换消息号 10314/10315/10317/10318/10319
+     · 实测结果（重要）：
+       服务端 13 个候选全部发出（日志 #0..#12 齐全）
+       但客户端**完全没有把任何一个当成回包**：
+         · 日志里不再出现 "收到 start stage 消息, ret code 为 -<数字>"
+         · 变成每秒 "WeakNet ReqId 182 10304" 重试 + UIComNetworkWaitDialog 等待框
+       ⇒ 说明 raw 发送的帧（序号/加密位/包头处理）与正常 Send() 不同，
+         客户端无法把它和挂起的请求对上号
+       ⇒ 想靠 raw 包做字段试错，**必须先解决帧格式**，否则测的都不是协议内容
+
+  三、当前判断（三条路都到了硬边界）
+     1) 静态读 schema：被 IL 保护器挡住
+     2) 内存找描述符：网络消息那批没有 FileDescriptorProto（只有 battle_sync 有）
+     3) raw 包试错：帧格式对不上，客户端直接忽略
+     ⇒ 真正能继续的只剩：
+        a) 让服务端用「正常 Send 路径 + 自定义 IMessage 实现」发候选
+           （即：自己在服务端写一个实现 IMessage 的类，按需输出任意字段字节，
+             这样帧格式走正常通道，客户端才能识别）
+        b) 脱 IL 保护器（拿到真实 WriteTo 字节码）
+        c) 找到 “-<数字> 到底在客户端哪行判定” —— 需要能反编译被保护的方法
+
+  四、状态
+    服务端   已恢复：不带 GF2_STAGE_TRY，HandleStageStart 走正常 SC_StageReady
+             新增的可选能力（不设环境变量时不影响正常流程）：
+               GF2_STAGE_TRY（候选连发试验）、Connection.SendRawPacket / GetSendSequence
+    编队 12 组 ✅ / 关卡全解锁 ✅ / 副本：黑屏（-<数字>）❌
+
+================================================================
+第 23 轮 · 2026-11-11 06:10（脱壳难度评估 + 一处重要自我更正）
+================================================================
+
+  ★ 更正第 22 轮的一个错误判断
+    我当时说 “NetworkProtocol 里自带 IL 解释器（ReadIL/ReadBlock/ReadInstructions）”，
+    这是**错的**。核实后：
+       · np_src 里 4023 个文件，其中 181 个含 "ILReader.cs"
+       · 101 个含 "Invalid token"
+       · 那些 ReadIL / ReadBlock / ReadAndDecodeMetadataToken 全部出现在
+         "// System.ArgumentException: Invalid token ... at ICSharpCode.Decompiler.IL.ILReader.xxx
+          in /_/ICSharpCode.Decompiler/IL/ILReader.cs:line 227"
+         这类注释里 —— 是 **ILSpy 自己的报错堆栈**，不是客户端的解释器
+
+  一、壳的识别结果（实测）
+     · 在 NetworkProtocol.dll 里搜商业壳标记：0 命中
+       （.NET Reactor / ConfuserEx / Babel / Eazfuscator / SmartAssembly /
+         Agile.NET / Dotfuscator / Themida / VMProtect / KoiVM / ILProtector / UPX 全无）
+     · 只有 SuppressIldasmAttribute
+     · 把依赖（Google.Protobuf/Common/CommonUtils/mscorlib）放到同目录再反编译，
+       IL 依然是坏的：
+         一个 7 字节的 .ctor 里出现 bne.un.s / brfalse.s 这种非法序列
+     · 101 个文件报 "Invalid token"
+     ⇒ 方法体里的**元数据 token 是无效的**，属于"方法体加密/置乱"型保护，
+        且没有商业壳特征 → 自研或去标识化的中文壳（DNGuard 这类 HVM 的典型表现）
+
+  二、更关键的一点：真正的代码很可能不在这个文件里
+     Codes 目录里同时存在：
+        Assembly-CSharp.dll.bytes          24.79 MB  ← MZ 头 + BSJB 元数据有效
+        Assembly-CSharp.dll.bytes_HUDll.u 148.75 MB  ← 头部 2F D6 D5 4F（不是 MZ）
+     ⇒ 24.79MB 那份是"能读元数据、方法体被打坏"的壳/桩，
+        **真正的实现应该在 148.75MB 的 _HUDll.u（热更新程序集，整文件加密）里**
+     ⇒ 也就是说：要拿 schema 就得先解 148MB 的热更包，难度比"脱方法体保护"更高一档
+
+  三、硬度结论（回答"有多硬"）
+     难度：高。理由三条
+       1) 没有商业壳可套现成脱壳器（无签名、无属性、无可识别节名）
+       2) 方法体 token 被打坏，静态反编译得不到有效 IL
+       3) 真码在 148MB 的整文件加密热更包里，格式未知
+     可行但很贵的路线（按性价比）
+       · 运行时 Hook 加载器，dump 解密后的热更程序集 → 再反编译（最直接，但要先定位加载器）
+       · 或者继续走"服务端正常 Send + 自定义 IMessage"的协议试错（不碰客户端）
+
+  四、我的建议
+     先做**成本最低的那条**：在服务端写一个实现 IMessage 的自定义消息类，
+     用正常 Send 通道发候选结构（这样帧格式一定对），一次进副本测一批。
+     如果这条路也不通，再考虑投入脱壳（那是另一个独立工程，工期按天算）。
+
+================================================================
+第 24 轮 · 2026-11-11 06:40（脱壳尝试：下了 de4dot，未识别；定位到"只有方法体被加密"）
+================================================================
+
+  一、用现成工具试的结果
+     · 网上现成工具调研（web 检索）：
+         de4dot（通用去混淆）、ViRb3/de4dot-cex（社区维护版）、
+         wwh1004/NetGuard-Unpacker-Public、DNGuard HVM 脱壳工具（第三方流传）
+     · 网络可用（api.github.com / raw.githubusercontent / pypi 都 200）
+     · 下载并运行 de4dot-cex v4.0.0（2.7 MB，解压即可用）：
+         de4dot-x64.exe NetworkProtocol.dll
+         → "Detected Unknown Obfuscator"
+         → 随后 Cleaning 阶段抛异常（连异常字符串都打不出来）
+       ⇒ 通用工具**认不出这个壳**，也没有对应脱壳器可套
+
+  二、自己做的诊断（关键结论）
+     1) 商业壳标记全无（.NET Reactor/ConfuserEx/Babel/Eazfuscator/SmartAssembly/
+        Agile.NET/Dotfuscator/Themida/VMProtect/KoiVM/ILProtector/UPX 一个都没有）
+        只有 SuppressIldasmAttribute
+     2) 程序集结构：
+          .text   vaddr=0x2000  vsize=0xB57E84  rawsize=0xB58000  （11.3 MB）
+          .rsrc / .reloc 正常
+          .text 里零字节占比 27.6%
+     3) **元数据是明文的、完好的**：
+          BSJB 签名在文件内 0x3CEFB8，版本串 v4.0.30319
+          "MergeFrom" / "WriteTo" / "Descriptor" / "Google.Protobuf" /
+          "MKDABDDEEKF" / "MsgScStageReady" 这些名字在 .text 里都能正常找到
+     4) 但**方法体字节是乱码**：
+          RVA 0x20EF（一个 7 字节 .ctor）实际字节 = 1e 33 1a 2c 32 35 33 1a 6e 4a …
+          完全不是合法 IL（真实应为 ldarg.0 / call Object::.ctor / ret）
+         101 个文件报 "Invalid token"
+     ⇒ 结论：**只有方法体（IL）被加密/置乱，元数据和字符串堆都是明文**
+        这是 DNGuard-HVM 一类"方法体加密 + 元数据保留"的典型特征（但无标记，可能自研）
+
+  三、这意味着什么（可行性判断）
+     · 好消息：类名、方法名、字段名、引用关系全都在，能静态分析结构
+     · 坏消息：正文（方法体）读不到 → 我们想要的“WriteTo 字段顺序”恰好就在正文里
+     · 真正可行的脱壳路线只有"运行时"：
+         加载器在运行时把方法体解密成可执行 IL（或交给解释器），
+         期间内存里一定会出现**明文的方法体**
+       ⇒ 下一步应做：进程内 dump "已加载的托管镜像"，
+         定位到 BSJB/元数据基址，回溯 MZ/PE 头，整块 dump 出加载态程序集，
+         再对 dump 出来的程序集反编译（此时方法体应是明文）
+
+  四、已准备好的资产
+     · <工具目录>\tools\de4dot\  （de4dot-cex v4.0.0，含 de4dot.exe / de4dot-x64.exe）
+     · <中间产物目录>\GF2_asm\withrefs\（NetworkProtocol + 依赖，便于反复试）
+     · 侧载 DLL 已有：内存字符串搜索（memfind）、抓 bundle、AES 断点
+
+================================================================
+第 25 轮 · 2026-11-11 07:20（全量内存快照体系建成 + 镜像分析的现状）
+================================================================
+
+  一、按“先全量快照、再离线分析”的思路，做成了工具并跑通
+     工具：侧载 DLL 新增 gf2_memsnap.c
+       触发 <out>\_memsnap_now.txt
+       产物 <out>\memsnap.bin        所有可读内存区顺序拼接
+            <out>\memsnap_index.txt  每区一行：基址 大小 文件偏移 保护 类型
+            <out>\_memsnap_log.txt   日志
+     实测：memsnap.bin = **2.79 GB**，2949 个区域写入，游戏全程存活
+     优化/踩坑：
+       · 必须跳过 MEM_MAPPED（资源文件映射，几十 GB，且不需要）
+       · 单区上限 256MB
+       · 索引行不能用 wsprintfA 的 %llu（参数错位会**直接把游戏搞崩**，
+         第一次快照就是这样崩的；改成 %u 后稳定）
+       · 日志里 %f 打印成 "f"（wsprintf 不支持浮点），属显示问题不影响数据
+
+  二、离线分析（对 2.79GB 快照）已完成的部分
+     · 扫 "BSJB"（.NET 元数据签名）：39 处
+     · 对前 20 处回溯 PE 头并切出镜像：全部 ≤2.6MB，
+       都是 Unity 自带的托管程序集（UnityEngine.* / mscorlib 等）
+       **没有 NetworkProtocol 那种 11MB 级的大程序集镜像**
+     · 在快照里搜协议类名：
+         MKDABDDEEKF     1 处
+         MsgScStageReady 0 处   ← 这次快照里没有
+         LHCGMDABPGJ     1 处
+     ⇒ 说明协议程序集不是以 PE 镜像形式常驻，
+        而是 HybridCLR 的“元数据 + 解释执行”形态；
+        且相关字符串是**按需加载**的（快照时机不同，命中会变）
+
+  三、结论：脱壳这条路要投入的量级
+     · 静态：方法体被加密（元数据明文、IL 乱码），通用工具 de4dot 认不出壳
+     · 运行时：需要专门去 hook HybridCLR 的解释器，抓“解密后的方法体”，
+       属于独立工程（按天算），而且要反复和“字符串按需加载”的时机赛跑
+     · 相比之下，服务端侧的“自定义 IMessage + 正常 Send 通道试协议”成本低得多
+
+  四、当前交付状态（建议在此收尾交接）
+     服务端    <GF2根目录>\Server（主机项目 NTRSimulator\NTRSimulator.csproj）
+               · AbResourceVersion = 4.0.5136.13967.27078（红线，不要改）
+               · GF2_BLOCK_MSGS=20029,23017（诊断用，可去掉）
+               · HandleStageStart 正常发送 SC_StageReady{Timestamp}
+               · 另含 GF2_STAGE_TRY 试验模式（不设环境变量时不生效）
+     客户端    已全量还原：xinput1_3.dll 侧载（我们自己的，79~83KB）、
+               资源 76.91 GB 完好、无 .download 残留
+     功能      编队 12 组 ✅ / 关卡全解锁 ✅ / 副本：黑屏（-<数字>）❌
+     工具      <工具目录>\ 下：侧载 DLL 源码与产物、
+               de4dot-cex、抓内存脚本、memfind/memsnap/imgdump 模块
+     文档      本文件（25 轮，约 82KB）
+               （本机使用手册，未随包发布）（面向使用者）
+     快照      <中间产物目录>\GF2_lua\memsnap.bin（2.79 GB，可删）
+
+================================================================
+第 26 轮 · 2026-11-11 07:50（编队空白修好 + 自定义通道试协议：仍然 -<数字>）
+================================================================
+
+  一、编队（大厅→编队 空白）——已修复，根因是“数量超出客户端 UI 上限”
+     · 现象：自定义编队返回 12 条后，点【编队】完全空白、什么都没有
+     · 服务端日志证明数据是发出去的（MsgScGetCustomFormation 回了 12 条 name=编队1..12）
+     · 试错：把数量改成可配置（GF2_FORMATION_COUNT / GF2_FORMATION_ID_BASE），
+       用 6 条测试 → **客户端恢复正常显示**
+     · 结论：客户端 UI 只支持 6 个编队槽位，超过就整页渲染失败
+     · 已把默认值定为 6（想临时改可用环境变量）
+     · 副作用：之前内存里存的“队伍1”配置在重启后丢失（本来就是进程内字典，未落库）
+
+  二、自定义通道试协议（按计划做的）——仍然失败
+     · 新增 Connection.SendRawThroughNormalPath(msgId, payload)：
+         走**正常发送栈**（BasePacket.FromIMessageBytes + MainMessage，
+         序号用 sendSequence 回显、加密位用 ComputeEncryptionByte 计算）
+       与之前的 raw 直发不同：这次客户端**确实收到了并处理**了
+     · HandleStageStart 支持 GF2_STAGE_PAYLOAD / GF2_STAGE_MSGID
+     · 本次 payload：08 00 10 00 18 00 20 00 28 00 30 00 38 00
+       （protobuf field1~7 全 0；不认识的字段会被忽略，所以无论客户端读哪个字段都是 0）
+     · 服务端确认发出：[STAGE-CUSTOM] msgId=10316 payloadLen=14
+     · 客户端结果：仍然
+         "收到 start stage 消息, ret code 为 -<数字>"
+     ⇒ **结论：这个 -<数字> 不是从 SC_StageReady 的任何字段读出来的**
+        最可能：它是客户端“本地开场流程”的返回值（日志措辞是“收到消息”，
+        但 ret code 来自本地 BattleModule/StageModule 的启动调用），
+        与回包内容无关 —— 这也解释了为什么 Timestamp=0、空包、7 个 0 字段，结果完全一样
+
+  三、当前对黑屏的判断（收敛）
+     · 消息号/序号/加密位都对
+     · 回包内容无关（三种 payload 结果相同）
+     · 场景能加载、预加载 9 步全过、SwitchVisible:Battle 也执行了
+     ⇒ 卡在“客户端本地战斗初始化”这一步，它需要一个**我们还没提供的输入**，
+        而这个输入不是 SC_StageReady 的字段（可能是某个更早的状态/表/权限）
+     ⇒ 想继续，必须能读到客户端本地这段逻辑 —— 又回到“方法体被加密”的老问题
+
+  四、本轮工具沉淀（可复用）
+     · Connection.SendRawThroughNormalPath(msgId, payload)：正常栈发任意包
+     · GF2_FORMATION_COUNT / GF2_FORMATION_ID_BASE：编队数量/起始 Id 可调
+     · GF2_STAGE_PAYLOAD / GF2_STAGE_MSGID：StageStart 回包可任意定制
+     · 编队上限 6 的结论（避免以后又把 UI 搞空白）
+
+================================================================
+第 27 轮 · 2026-11-11 08:10（按"先看客户端要什么"抓了完整请求转录）
+================================================================
+
+  一、做法：不再猜回包，先把客户端请求全量记录下来
+     服务端 PacketUtils.LogBasePackets 对收/发双向都会打印
+       msgId + 解析后的 proto 名 + payload 长度 + payload 十六进制
+     所以一次干净会话就能拿到完整转录。
+
+  二、转录结果（一次进副本的会话，184 个请求）
+     高频：MsgCsStageRecord(10320) **24 次**
+           MsgCsClientDataUpload(10415) 7 次、MsgCsPlan(10450) 6 次、
+           MsgCsPlanActivity(10456) 4 次、MsgCsLogin 2 次…
+     StageRecord 的 payload 都是 `10 XX`（field2 = type），type 实测覆盖：
+       11,12,13,14,20,21,22,26,31,32,33,36,41,50,54,59,61,63,64 …
+     ★ 我们的 StageHandler.HandleStageRecord 里 switch 只有 case 11/12/13/14，
+       **没有 default** ⇒ 其余 20 种 type 一个回包都没有，客户端只能等
+
+  三、按此修复并复测
+     修：HandleStageRecord 开头判断，非 11~14 的 type 立即回
+         `SC_StageRecord { Record = null }`（保证有应答）
+     复测：StageRecord 请求 24 / 回复 24（全部对上）
+     结果：客户端仍然 "收到 start stage 消息, ret code 为 -<数字>"
+     StageStart 之后服务器只发了 StageReady，客户端再没发任何包
+     ⇒ 这条不是黑屏的根因（虽然确实是"客户端干等"的一个缺陷，已修好）
+
+  四、到目前为止黑屏相关的排除清单（都有实测）
+     1) 关卡/教学/剧情进度    → 全部改成已通关/已看，现象不变
+     2) SC_StageReady 内容     → Timestamp 时间戳 / 0 / 空包 / field1~7 全 0，
+                                 四种结果完全一样
+     3) 消息号/序号/加密位    → 已确认正确（客户端确实收到并处理）
+     4) StageRecord 未应答    → 已补全 24/24，现象不变
+     5) 客户端程序集/资源      → 未改动；撤掉侧载 DLL 后现象相同
+     ⇒ 结论：-<数字> 是客户端**本地战斗初始化**的返回码，
+        触发条件在客户端代码里（方法体被加密，静态读不到）
+
+  五、剩下真正可行的两条（都需要新的投入）
+     A. 脱壳：拿到客户端方法体明文 → 定位 -<数字> 的判定 → 补服务端输入
+        （已知：元数据明文、IL 加密；de4dot 不识别；真码可能在 148MB 的 _HUDll.u）
+     B. 官方抓包对照：用上游 NTRSimulator 自带的 PcapUtils 回放官方战斗流程
+        （手头没有包，需要外部提供）
+
+  六、本轮状态
+     服务端运行中：编队 6 组（UI 上限）、StageRecord 全 type 有应答、
+                   AbResourceVersion 原值、GF2_BLOCK_MSGS=20029,23017
+     客户端：未改动文件（仅侧载 xinput1_3.dll，可随时删）
+     文档：本文件 27 轮；另有 （本机使用手册，未随包发布）
+
+================================================================
+第 28 轮 · 2026-11-11 08:35（B 路线：官方抓包回放，工具已就绪，只差包）
+================================================================
+
+  一、现状与结论
+     · 用户没有官方账号 ⇒ 无法自己抓包
+     · 上游仓库/服务端**没有附带任何 pcap**
+       （Server\Resources 下只有配置表 .bytes，没有 Packets 目录）
+     · 但回放工具是现成的，已编译并验证：
+         <GF2根目录>\NTRSimulator\NTRSimulator.PcapParser\bin\Release\net8.0\NTRSimulator.PcapParser.exe
+       它读取 StaticConfig.PcapDir（= <服务端>\Resources\Packets）下的 *.pcap，
+       把里面的包按 msgId 解析成 JSON 打印出来；
+       PcapUtils 还提供
+         GetRespPacketsForRequest / GetRespMessagesForRequest
+         GetPacketsFromPcap / GetMessagesFromPcap
+       可以直接在服务端里"照抄官方回包"。
+
+  二、已做的落地准备
+     · 建好目录：<GF2根目录>\Server\Resources\Packets\
+     · 写好说明：该目录下 _怎么用.txt
+         说明要什么包、放哪、怎么运行、重点看哪几个消息
+         （MsgScStageReady / StageInto / StageResult / StageResultConfirm）
+         以及给有号的人怎么抓（Wireshark：tcp && ip.addr != 127.0.0.1，录"副本→战斗→结算"）
+     · PcapParser 已 Release 编译通过（产物已确认可运行）
+
+  三、这意味着什么
+     B 路线现在是"**只欠一个 pcap**"的状态：
+       拿到包 → 丢进 Resources\Packets → 跑解析器 →
+       照官方 SC_StageReady / StageInto / StageResult 的字段回填服务端 →
+       不需要读客户端加密代码，也不需要脱壳
+
+  四、当前服务端状态（可交付）
+     · 编队 6 组（客户端 UI 上限；GF2_FORMATION_COUNT 可调）
+     · StageRecord 对 11~14 有完整数据，其余 type 统一回空包（24/24 有应答）
+     · AbResourceVersion = 4.0.5136.13967.27078（原值，红线）
+     · GF2_BLOCK_MSGS=20029,23017（诊断开关，可去掉）
+     · 调试开关：GF2_STAGE_PAYLOAD / GF2_STAGE_MSGID（不设则不生效）
+     · 客户端文件未改动（仅侧载 xinput1_3.dll，删除即还原）
+
+================================================================
+第 29 轮 · 2026-11-11 08:50（收尾：把结论整理成对外报告）
+================================================================
+
+  一、路线判定
+     · A 脱壳：客户端方法体加密（元数据明文、IL 乱码、de4dot 不识别），
+              真码可能在 148MB 的 _HUDll.u 里 → 独立工程，工期按天算
+     · B 抓包：用户无官方账号、手头无 pcap、上游也未附带任何包
+              ⇒ 现阶段不可行（回放工具已就绪，只欠文件）
+     ⇒ 两条都卡死，所以本轮做收尾整理
+
+  二、新增交付物
+     文件：<GF2根目录>\给上游_进副本黑屏_-<数字>_报告.txt
+     内容：
+       · 环境与现象（含客户端日志原文的顺序）
+       · 已经做过并排除的 6 组验证（关卡/教学/剧情、SC_StageReady 四种 payload、
+         消息号与序号加密位、StageRecord 24 种 type、客户端资源、场景与噪音）
+       · 结论：-<数字> 是客户端本地战斗初始化的返回码，与回包字段无关
+       · 需要的帮助（官方 pcap / 战斗期服务端发包说明 / 脱壳片段）
+       · 已可用成果（编队上限 6、SDK 反代注意点、StageRecord 要全 type 应答）
+     用途：可直接贴 issue / 发给社区或上游，让别人一眼知道缺什么
+
+  三、项目当前完整状态（可交付/可接手）
+     服务端   <GF2根目录>\Server（主机项目 NTRSimulator\NTRSimulator.csproj）
+              · 编队 6 组（GF2_FORMATION_COUNT 可调）
+              · StageRecord：11~14 有数据，其余 type 回空包（24/24 有应答）
+              · AbResourceVersion 保持 4.0.5136.13967.27078（红线）
+              · GF2_BLOCK_MSGS=20029,23017（诊断，可关）
+              · GF2_STAGE_PAYLOAD / GF2_STAGE_MSGID（调试，不设不生效）
+     客户端   未改动文件；仅在游戏根目录放了侧载 xinput1_3.dll（删掉即还原）
+     功能     登录 ✅ / 大厅 ✅ / 编队 6 组 ✅ / 关卡全解锁 ✅ /
+              副本进入场景但黑屏 ❌ / 结算 ⛔
+     工具     <工具目录>\
+                · 侧载 DLL 源码与产物（抓解密 bundle、内存搜索、快照、镜像 dump…）
+                · de4dot-cex、抓内存/抓描述符脚本
+     文档     <GF2根目录>\修复记录_战斗与编队.txt（29 轮）
+              <GF2根目录>\（本机使用手册，未随包发布）
+              <GF2根目录>\给上游_进副本黑屏_-<数字>_报告.txt
+     快照     <中间产物目录>\GF2_lua\memsnap.bin（约 2.8 GB，可删）
+
+================================================================
+第 30 轮 · 2026-11-11 04:20（★ 黑屏破了！副本可进、场景可打，只差己方单位）
+================================================================
+
+  一、突破点：**消息号错了**
+     客户端发 CS_StageStart(10304) 后，等的不是 SC_StageReady(10316)，
+     而是 **SC_StageStart(10305)**：
+         field 2 = StageBattle（战斗数据）
+         field 3 = StageOther
+     实测：回 10305 且两个字段各给一个空子消息（payload 12 00 1A 00）
+           → 立刻不再 -<数字>，副本正常进入（有敌人、有掩体、有回合）
+     之前所有"猜回包字段"的实验全部无效，就是因为发错了消息号。
+
+  二、随之打通的链条（同一套路：查枚举/字段 → 补实现）
+     1) 10305 SC_StageStart  → 进副本（原为 10316，已修）
+     2) 10300 CS_StageUsableGuns(10300) → SC_StageUsableGuns(10301)
+        客户端问"本关可用人形"，原来**完全没实现** → 部署面板 0/0
+        「暂无可选择人形」；补上后部署面板正常（lineup + lineup_guns）
+     3) 10306 CS_StageInto → SC_StageInto(10307)
+        部署完点"作战开始"时发，原来**没实现**（NotImplementedException）
+        → 一直转圈；补上后能真正开打（回合推进、敌人行动）
+
+  三、当前剩余问题（唯一一个）
+     战场上**没有我方单位**，只有敌人，回合一直空转。
+     已排查：
+       · 战斗是**纯客户端模拟**：StageInto 之后客户端只发 10105 Sync 心跳，
+         没有任何回合/操作包（点角色也不发 CS_StageOp 10317）
+       · Auto 强制 false 无变化（不是自动战斗导致）
+       · StageBattle 现有字段：Id/StcStageId/StageClass/RandomSeed/BattleLevel/
+         Side/UserSides/Camps/BattleEnchantments/Result/LeaderId/FormationId/
+         NeedSyncFormation/IsPass/…
+       · Camps 元素类型 OPADLDPIIKL 的字段名全混淆
+         （KGMEBGGOOAM/LBJLMGIPOJA/uav/DarkZoneGun/…），看起来是暗区/SLG 的营地结构，
+         不是普通战斗的小队
+       · 协议里另有整套战斗会话消息：CS_BattleLogin(20701)、BattleLoading、
+         BattleDeploymentModification、BattlePlayerAction、BattleHeartBeat
+         —— 但客户端**从未发送**，服务端也没有任何 20701 的实现
+     ⇒ 判断：部署的 6 个人形没有随 SC_StageInto 回传给客户端，
+        或者需要另一条战斗会话消息把单位带进战场
+
+  四、下一步（照同样的取证思路）
+     1) 抓 CS_StageInto 的完整 payload（field2 guns 里就是部署的 6 个人 + 位置），
+        再找哪个字段能把这批单位回给客户端（优先试 Camps）
+     2) 若 Camps 语义不明：在客户端内存里解 OPADLDPIIKL 的 FileDescriptorProto，
+        拿回原始字段名（我们已有 memsnap/描述符解码工具）
+     3) 顺带待办：编队持久化（现在存内存，重启丢 → 每次登录弹教程）
+
+  五、已确认可用的服务端改动清单（本轮）
+     StageHandler.HandleStageStart      → SC_StageStart（StageBattle+StageOther）
+     StageHandler.HandleStageInto       → SC_StageInto（同上，StcStageId 由 StageStart 记录）
+     StageHandler.HandleStageUsableGuns → SC_StageUsableGuns（lineup + lineup_guns）
+     StageHandler.HandleStageRecord     → 所有 type 都有应答（11~14 有数据，其余空包）
+     CustomFormationHandler             → 6 编队（UI 上限），GetLeaderGunId 供 StageBattle 用
+     CustomFormationHandler             → 编队数量/起始 id 可用环境变量覆盖
+
+================================================================
+第 31 轮 · 2026-11-11 05:00（已进战斗，剩「己方单位不生成」；含大量实测结论）
+================================================================
+
+  一、本轮已彻底修好的（都有实测）
+     1) 黑屏 -<数字> → 根因是回错消息号：应回 SC_StageStart(10305)，不是 StageReady(10316)
+     2) 部署面板 0/0「暂无可选择人形」→ 缺 HandleStageUsableGuns(10300→10301)
+     3) 点"作战开始"转圈 → 缺 HandleStageInto(10306→10307)
+     4) 编队保存不了 / 每次登录弹教程 → 编队改为落盘 formations.json
+        （Google.Protobuf JsonFormatter；注意必须写成对象 { "1": {...} }，
+          写成字符串会在读回时报 "Expected an object"）
+     5) 可用人形给错 → 改为按【编队】给，且必须用 GunId（配置角色 id）匹配，
+        用数据库行号 g.Id 会全部匹配失败（表现为 lineup=0、客户端退化成显示全角色）
+     6) StageRecord 的 20 多种 type 原来无应答 → 统一回空包
+
+  二、战斗现状（evidence）
+     · 场景加载、敌方生成、回合推进都正常（不发 camps 时敌人会动、会冲目标点）
+     · **己方单位始终不出现**，所以敌人冲到目标点就"任务失败"
+     · 客户端在 StageInto 之后只发心跳（10105），没有任何回合/操作包
+       ⇒ 战斗为纯客户端模拟，服务端不参与逐回合
+     · 关键实验数据：
+         a) StageBattle 里只要带上 camps（哪怕只有玩家一侧），敌人就**不再移动**
+            ⇒ 客户端把 camps 当"整个战场的全部队伍"；缺敌方数据 = 敌方无单位
+         b) camps 为空时客户端按关卡配置自行生成敌方（所以敌人能动）
+         c) 只填 formation_id / leader_id / predeployment_complated / need_sync_formation
+            都不产生己方单位
+         d) CS_StageInto.guns 实测是 map<uint32,uint32>：
+            我们抓到的一次为 {<数字>:1035, <数字>:1081, <数字>:1078, <数字>:1074}
+            action_sequence = [1074,1078,1081,1035]
+            （key 彼此差 65536=0x10000，像打包过的槽位/坐标，value 才是角色 id）
+
+  三、结构资料（本轮从仓库真名 proto 拿到，后续可直接用）
+     文件：NTRSimulator.Common.Proto\protos\GF2_deobfuscated.proto（837 KB，真字段名）
+     message StageBattle {
+        int64 id=1; uint32 stc_stage_id=2; JLHABLIBDCH stage_class=3;   // PVE=0, PVP=1
+        int64 random_seed=4; uint32 battle_level=5;
+        FMMHAOHCKFN side=7;                       // Player0..Player4
+        map<uint64,FMMHAOHCKFN> user_sides=8;
+        repeated OPADLDPIIKL camps=9;
+        BattleResult result=10; bool auto=11; bool predeployment_complated=16;
+        uint32 leader_id=17; EALGLDFHEKN battle_type=18;
+        uint32 formation_id=21; bool need_sync_formation=22; bool is_pass=24; … }
+     message OPADLDPIIKL { FMMHAOHCKFN KGMEBGGOOAM=1;         // 阵营
+        repeated LECCHKLIOOK LBJLMGIPOJA=2;
+        repeated JPPLEFEAECH NFGCFGBGMCA=7;                    // ★ 上场单位列表
+        DarkZoneGun DJFBDNMEONC=10; int32 PDLDPKJJEND=9; … }
+     message JPPLEFEAECH { Gun JEKFJDDLGOO=1; uint32 OGEOEEBNDEP=2; string GCAABEBJHFL=3;
+        uint32 sequence=24; uint64 uid=25; repeated uint32 buff_id=26; … }
+
+  四、下一步（按性价比）
+     A. 解客户端描述符/反编译，确认"己方单位从哪来"（最确定，但要时间）
+     B. 用关卡表（客户端 Table\*Stage*Data.bytes）还原敌方 camps，
+        让服务端把**双方 camps 都发给客户端** —— 与"camps 必须完整"的观测吻合
+     C. 继续字段试错（性价比已很低）
+
+  五、当前服务端状态（基线，敌人能动）
+     FormationId=0、不发 camps、Predeployment 不设
+     HandleStageStart → SC_StageStart(10305)
+     HandleStageInto  → SC_StageInto(10307)
+     HandleStageUsableGuns → 编队人形（GunId 匹配）
+     CustomFormationHandler → 6 编队 + formations.json 持久化
+     环境变量：GF2_STAGE_CAMPS=1（发 camps 试验）、GF2_FORMATION_COUNT、
+               GF2_STAGE_PAYLOAD / GF2_STAGE_MSGID（协议试错）、GF2_BLOCK_MSGS
+
+================================================================
+第 32 轮 · 2026-11-11 05:40（B 路线：关卡表解析成功，拿到出生点/敌方编组）
+================================================================
+
+  一、表文件格式（终于摸清，以后可直接解析）
+     每个 .bytes：
+       [0..3]             4 字节 LE：header/index 长度 N
+       [4..4+N-1]         header（客户端懒加载索引用，服务端跳过）
+       [4+N..]            wrapper protobuf：**field 1 重复行**
+     服务端 TableService.LoadTable 就是这么读的（RowFieldNumber=1, tag=0x0A）。
+     数据目录：<GF2根目录>\Server\Resources\Tables（1976 个 .bytes，与客户端 Table 一致）
+     表结构真名：NTRSimulator.Common.Proto\table_protos\GF2_table_deobfuscated.proto
+
+  二、StageData[10144]（实测值）
+     id=10144, chapter=101, type='BH-1-4', recommanded_playerlevel=6
+     round_countdown=5, scene='Main/Yellow/l_main_yellow_fortressPark_04/…'
+     stage_config=10144, xrange=6, yrange=1006, camera_xoz_range=50, max_cover_num=50
+     weather=4, perload_cutscene='CutScene_Airship'
+
+  三、StageConfigData[10144]（★ 关键，解释了很多现象）
+     gun_birth_points = '<数字>:(0.0,180.0,0.0)::false|<数字>:…|<数字>:…|<数字>:…'
+        ★ 这四个数正是客户端 CS_StageInto.guns 里的四个 key！
+        ⇒ key = **出生点 id**，value = 角色 id；客户端在告诉服务端"谁站哪个点"
+     gun_min_count = 1, gun_limit = 4      ← 这一关最多上 4 人
+     initial_enemies = '<数字>:2027:(0.0,0.0,0.0):1:False:False:0:False:2:0|<数字>:2022:…'
+        ⇒ 敌方初始编组（id:敌兵id:坐标:等级:…），客户端在 camps 为空时按它自己生成
+     enemy_groups = [0x4EB9283, 0x4EB9282]  → StageEnemyGroupData
+     enemy_ids    = 6 个，events/triggers 各 4~6 个，map_id = 13
+
+  四、解释清楚的旧现象
+     · 部署界面"全角色 + 只能上 4 个"是**正常设计**（不是 bug，用户确认过）
+       之前我误以为"按编队给人形"才对，这条认识已纠正
+     · CS_StageInto.guns 的 map 不是"乱七八糟的大整数"，而是出生点 id
+     · 客户端不发 camps 时会用 initial_enemies 自己生成敌方 → 所以之前敌人能动
+
+  五、本轮失败的尝试（已回滚，避免混淆）
+     「把部署写回编队 + formation_id=1 + 不发 camps」
+       结果：敌我都不动 ⇒ 这条会破坏客户端整场初始化
+     已回滚到基线：FormationId=0、不发 camps、不写回编队（此状态敌人能动、我方不出现）
+
+  六、下一步 B 路线的正确做法（有数据支撑）
+     要让己方出场，就得让 camps **完整**（双方都发）：
+       玩家 camp：KGMEBGGOOAM=Player0，NFGCFGBGMCA(JPPLEFEAECH)=出生点→Gun
+       敌方 camp：KGMEBGGOOAM=敌方阵营，FBDLKMOOECN(CFMHGIMNBNN{id,level,side})
+                  数据来自 StageConfigData.initial_enemies / enemy_groups
+     实施方式：服务端已有 TableService，可直接
+       GetDataById<StageConfigData>(stcStageId) → 解析 initial_enemies 字符串 → 组敌方 camps
+     需要注意：initial_enemies 的 10 段字段含义还要再对照（id、敌兵 id、坐标、等级、flag…）
+
+  七、当前服务端状态
+     基线（敌人能动、我方无）；编队持久化已生效（formations.json）
+     已修：10305 StageStart / 10307 StageInto / 10301 StageUsableGuns / StageRecord 全 type
+
+================================================================
+第 33 轮 · 2026-11-11 05:55（收尾：回滚到稳定基线 + 打包交接）
+================================================================
+
+  一、最后两个实验（都失败，已回滚，避免污染主线）
+     1) camps 里给单位填出生点坐标（GCAABEBJHFL）+ 槽位（OGEOEEBNDOP）
+        —— 用 StageConfigData.gun_birth_points 解析出的真实坐标
+        结果：敌我都不动（客户端整场初始化直接卡住）
+     2) 之前那版「部署写回编队1 + formation_id=1」同样导致敌我都不动
+     ⇒ 结论：**给 camps 只能是"双方完整"，只给玩家一侧会把整场初始化搞坏**
+        现在的稳定基线：FormationId=0、camps 默认不发（GF2_STAGE_CAMPS=1 才发）
+
+  二、今天的成果边界（明确交接）
+     能：登录 / 大厅 / 编队（6 槽，持久化）/ 关卡全解锁 / 进副本 /
+         场景加载 / 敌方生成与行动 / 部署面板列出人形 / 点作战开始进入战斗
+     不能：己方单位出场（因此打不了、伤害数字、结算都无从谈起）
+     原因：camps（战场队伍）需要服务端提供**完整**编制（我方 + 敌方），
+           我们只凑出了我方；敌方需要按 initial_enemies + EnemyData 组，
+           且 JPPLEFEAECH / CFMHGIMNBNN 的若干字段含义仍未确认
+
+  三、交接物（已打包）
+     <GF2根目录>\GF2_战场修复交接包_20261111.zip（27 个条目）
+       01_报告与记录/
+           交接报告_战场修复_20261111.md     ← 主报告（结论/修复/坑/数据/工具/建议）
+           给上游_进副本黑屏_-<数字>_报告.txt
+           修复记录_战斗与编队.txt（全文 33 轮）
+           （本机使用手册，未随包发布）
+       02_服务端改动源码/  StageHandler.cs / CustomFormationHandler.cs /
+                          Connection.cs / LobbyHandler.cs / AvgDuoHandler.cs
+       03_工具源码/        侧载 DLL 全部源码 + xinput1_3.dll
+       04_数据摘录/        数据摘录_10144.txt（关卡表/敌方表实测数据）
+
+  四、给接手者的最短路径
+     1) 有官方 pcap → PcapParser 对照 SC_StageStart/SC_StageInto 的 camps（尤其敌方 camp）
+     2) 无 pcap → 按 initial_enemies(enemyId=EnemyData.id) + enemy_groups 组敌方 camps，
+        与玩家 camp 一起发；参考 proto：OPADLDPIIKL.NFGCFGBGMCA(我方) /
+        FBDLKMOOECN(敌方，CFMHGIMNBNN{id,level,side,?})
+     3) 战斗能打完后，再补 SC_StageResult(10311) / SC_StageResultConfirm(10324) 做结算

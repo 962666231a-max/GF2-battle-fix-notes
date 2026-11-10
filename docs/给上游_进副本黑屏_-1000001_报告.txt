@@ -1,0 +1,77 @@
+﻿================================================================
+给上游 / 社区的报告（可直接贴到 issue 或群里）
+================================================================
+
+标题：GF2 单机服务端：进副本后客户端本地返回 -<数字>（黑屏），已排除的清单与需要的帮助
+
+一、环境
+   · 客户端：CN 4.0.5136（AbResourceVersion 4.0.5136.13967.27078，STC <数字>）
+   · 服务端：NTRSimulator（net8.0），端口 443(SDK)/7001(Game)
+   · 客户端重定向：launcher.exe 注入 daiyan.dll → 127.0.0.1（非 hosts）
+
+二、现象
+   能登录、能进大厅、能打开编队与各系统界面；
+   点副本任意关卡 → 场景加载、9 步预加载全部走完（日志见下）→ 黑屏且不再有反应。
+
+   客户端日志（客户端自己的 log_*.bin，UTF-16）原文：
+     ### m_PreloadStep = PreloadCombatGrid → PreloadUIAssets → WaitPreloadUIAssets →
+         PreloadCutscene → WaitPreloadCutscene → PreloadDelayGun → WaitPreloadDelayGun →
+         WaitForReConnectLogic → WaitForReConnectView → 9
+     [Battle] Load Scene Task:...(118/119/120/121) Start
+     [Tutorial] stageId:10144 + type:EMBATTLE_BEFORE => AvgId:<数字>
+     SceneSystem SwitchVisible:Battle
+     [UI - Hide] ChangeSceneLoadingPanel
+     收到 start stage 消息, ret code 为 -<数字>
+     [UI - Close] ChangeSceneLoadingPanel
+     ----> LoginStateBase NetWorkError: ReceiveError
+     ----------> ConnectClose
+
+三、已经做过的验证（全部实测，都排除了）
+   1) 关卡/教学/剧情进度
+        把 10144~10150 标成已通关、教学表标已完成、AvgDuo 剧情标已看过
+        结果：客户端照样走 10144，照样 -<数字>
+   2) SC_StageReady 的内容（MsgId 10316）
+        分别发：正常毫秒时间戳 / Timestamp=0 / 空 payload / protobuf field1~7 全 0
+        结果：四种完全一样（都是 -<数字>）
+        ⇒ 说明这个 ret code 不是从回包字段读出来的
+   3) 消息号/序号/加密位
+        双端 MsgId 一致（客户端 NetworkProtocol.dll 反编译出的枚举：
+        MSG_CS_StageStart=10304、MSG_SC_StageReady=10316 …），
+        序号按请求回显、加密位由 bodyLength 计算，客户端确实收到并进入了处理分支
+   4) StageRecord（MsgId 10320/10321）
+        客户端一次会话会按 24 个不同 type 询问关卡记录（11,12,13,14,20,21,22,26,31,
+        32,33,36,41,50,54,59,61,63,64…）；
+        我们原先只实现了 11~14，其余 type 无回包；
+        补成"未实现 type 统一回空包"后，24 个请求 24 个回复，现象不变
+   5) 客户端资源/程序集
+        未改动任何客户端文件；去掉我们注入的侧载 DLL 后现象完全相同
+   6) 场景与资源侧
+        战斗场景能加载（有 [Battle] Load Scene Task 与 SceneSystem SwitchVisible:Battle），
+        日志里的 "referenced script ... is missing" 均为 ProBuilder/Cinemachine 编辑器脚本，
+        属 release 包正常噪音；StcTableDataMap 表项缺失也是常态噪音
+
+四、由此得到的结论
+   · -<数字> 是客户端**本地战斗初始化**的返回码（客户端错误码表里有
+     IOJGLBFCNMO.CHIICDKCGPP = <数字>u，取负即 -<数字>）
+   · 它不依赖 SC_StageReady 的字段，也不依赖关卡/剧情/教学状态
+   · 触发条件在客户端代码里，但客户端程序集做了方法体加密：
+       - 元数据/字符串堆明文（BSJB 正常、类名方法名可读）
+       - 方法体字节是乱码（一个 7 字节 .ctor 解出来是 bne.un.s/brfalse.s 这种非法序列）
+       - de4dot 仅报 "Unknown Obfuscator" 并清洗失败
+       - 真正的实现可能在 148MB 的 Assembly-CSharp.dll.bytes_HUDll.u（整文件加密）
+
+五、我们需要的帮助（任一条即可）
+   A. 一份官方服务器的抓包（pcap），包含「副本→战斗→结算」这段
+      我们这边回放工具已就绪：NTRSimulator.PcapParser，能按 msgId 打印官方字段
+      只需放到 <服务端>\Resources\Packets\ 再运行即可对照
+   B. 或者：任何在 4.0.5136 上"能进战斗"的服务端实现里，
+      **StageStart 之后服务端到底发了哪些包**（消息号 + 字段）的说明
+   C. 或者：客户端程序集脱壳后的关键片段（能搜到 -<数字> / <数字> 的判定即可）
+
+六、已可用的成果（如果对别人有用）
+   · 编队：客户端 UI 只支持 6 个槽位，服务端下发超过 6 条会导致【编队】整页空白
+     （我们踩过：下发 12 条 → 空白；6 条 → 正常）
+   · SDK 资源反向代理：把 game_resources/* 反代官方 CDN，解决"解压时发生未知错误"
+     （注意必须缓冲成 byte[] 再返回，用 Stream 会返回 0 字节）
+   · StageRecord 必须对客户端询问的所有 type 都有应答，否则客户端会静默等待
+================================================================
