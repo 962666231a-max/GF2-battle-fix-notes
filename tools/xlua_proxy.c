@@ -11,7 +11,7 @@
  *   xlua_proxy.dll → xlua.dll           （本文件编译产物）
  * 卸载：把 xlua_real.dll 改回 xlua.dll 即可
  *
- * 输出：E:\残服务端破解\03_中间产物\GF2_lua\   （可用 GF2_LUA_OUT 覆盖）
+ * 输出：<输出目录>\   （可用 GF2_LUA_OUT 覆盖）
  */
 
 #include <windows.h>
@@ -36,7 +36,7 @@ static void ensure_out(void)
     if (g_out[0]) return;
     const char *env = getenv("GF2_LUA_OUT");
     if (env && *env) lstrcpynA(g_out, env, MAX_PATH);
-    else lstrcpynA(g_out, "E:\\残服务端破解\\03_中间产物\\GF2_lua", MAX_PATH);
+    else lstrcpynA(g_out, "L"."", MAX_PATH);
     CreateDirectoryA(g_out, NULL);
     char up[MAX_PATH];
     lstrcpynA(up, g_out, MAX_PATH);

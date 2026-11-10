@@ -9,7 +9,7 @@
  *
  * 用法
  *   gf2_launch.exe <游戏目录> [日志文件]
- *   例：gf2_launch.exe "E:\GF2\GF2Exilium\GF2 Game\GF2 Game\GF2 Game" "E:\...\unity.log"
+ *   例：gf2_launch.exe "<游戏目录>\GF2 Game\GF2 Game" "<日志路径>"
  */
 
 #include <windows.h>
@@ -43,12 +43,12 @@ int main(int argc, char **argv)
 {
     SetConsoleOutputCP(65001);
     /* 参数若被空格截断，回退到默认游戏目录 */
-    const char *gamedir = "E:\\GF2\\GF2Exilium\\GF2 Game\\GF2 Game\\GF2 Game";
+    const char *gamedir = "L"<游戏目录>\\GF2 Game\\GF2 Game";
     if (argc > 1 && strstr(argv[1], "GF2 Game"))
         gamedir = argv[1];
     else if (argc > 1)
         printf("参数看起来被空格截断了(得到: %s)，改用默认游戏目录\n", argv[1]);
-    const char *logfile = argc > 2 ? argv[2] : "E:\\残服务端破解\\03_中间产物\\GF2_lua\\unity.log";
+    const char *logfile = argc > 2 ? argv[2] : "L"."\\unity.log";
 
     char exe[MAX_PATH], dll[MAX_PATH], cmd[MAX_PATH * 3];
     wsprintfA(exe, "%s\\GF2_Exilium.exe", gamedir);

@@ -43,7 +43,7 @@ static void ensure_out2(void)
     WCHAR env[MAX_PATH];
     DWORD n = GetEnvironmentVariableW(L"GF2_LUA_OUT", env, MAX_PATH);
     if (n > 0 && n < MAX_PATH) lstrcpynW(g_out2, env, MAX_PATH);
-    else lstrcpynW(g_out2, L"E:\\残服务端破解\\03_中间产物\\GF2_lua", MAX_PATH);
+    else lstrcpynW(g_out2, L"L"."", MAX_PATH);
     CreateDirectoryW(g_out2, NULL);
     WCHAR up[MAX_PATH];
     lstrcpynW(up, g_out2, MAX_PATH);

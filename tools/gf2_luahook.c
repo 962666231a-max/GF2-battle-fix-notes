@@ -6,7 +6,7 @@
  *   GameAssembly.dll 的导入表里有这两项。我们在内存里把 IAT 指向自己的函数，
  *   先落盘再调用原函数，游戏行为不变。
  *
- * 输出：E:\残服务端破解\03_中间产物\GF2_lua\  （可用环境变量 GF2_LUA_OUT 覆盖）
+ * 输出：<输出目录>\  （可用环境变量 GF2_LUA_OUT 覆盖）
  *      每个脚本一个文件：NNN_<name>.lua（name 来自 luaL_loadbufferx 的 name 参数）
  *
  * 编译（mingw-w64）：
@@ -35,7 +35,7 @@ static void ensure_outdir(void)
     if (env && *env) {
         lstrcpynA(g_outdir, env, MAX_PATH);
     } else {
-        lstrcpynA(g_outdir, "E:\\残服务端破解\\03_中间产物\\GF2_lua", MAX_PATH);
+        lstrcpynA(g_outdir, "L"."", MAX_PATH);
     }
     CreateDirectoryA(g_outdir, NULL);
     char parent[MAX_PATH];

@@ -15,7 +15,7 @@
  *        xlua.dll!luaL_loadstring    → 我们的钩子
  *      钩子先落盘 Lua 字节码，再调原函数，游戏行为不变
  *
- * 输出目录：E:\残服务端破解\03_中间产物\GF2_lua\（宽字符 API，中文路径安全）
+ * 输出目录：<输出目录>\（宽字符 API，中文路径安全）
  * 日志：_sideload_log.txt（每次加载都写，便于确认生效）
  */
 
@@ -59,7 +59,7 @@ static void ensure_out(void)
     WCHAR env[MAX_PATH];
     DWORD n = GetEnvironmentVariableW(L"GF2_LUA_OUT", env, MAX_PATH);
     if (n > 0 && n < MAX_PATH) lstrcpynW(g_out, env, MAX_PATH);
-    else lstrcpynW(g_out, L"E:\\残服务端破解\\03_中间产物\\GF2_lua", MAX_PATH);
+    else lstrcpynW(g_out, L"L"."", MAX_PATH);
     CreateDirectoryW(g_out, NULL);
     WCHAR up[MAX_PATH];
     lstrcpynW(up, g_out, MAX_PATH);
