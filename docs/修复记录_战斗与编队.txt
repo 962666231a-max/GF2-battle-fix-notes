@@ -1986,3 +1986,327 @@
      客户端：未改动任何文件（仅根目录 xinput1_3.dll 侧载，可删）
      文档：本文件 38 轮；PR 说明在 E:\GF2\pr_body.md
      GitHub：GF2-battle-fix-notes（记录仓库）、NTRSimulator PR #6（代码）
+
+================================================================
+第 39 轮 · 2026-11-11 08:20（决定性实验：SDK 的 KeyNotFound 与我们的响应无关）
+================================================================
+
+  一、实验设计（为了证明"到底是不是在读我们的回包"）
+     对 create_order_qr 依次返回三种"故意破坏"的响应：
+        ① 非法 JSON（纯文本 "not-a-json-response"）
+        ② HTTP 500 空 body
+        ③ HTTP 200 空 body
+     如果异常类型会变 → 说明它在解析我们的响应；若完全不变 → 它读的是本地配置。
+
+  二、结果：三次都是同一个异常，一点没变
+     System.Collections.Generic.KeyNotFoundException
+        at MTSDKApi.HttpClient.<CreateOrderByQR>b__0(MTSDKBaseApi.LitJson.JsonData data)
+     ⇒ **结论：这个 KeyNotFound 不是从我们回包里读出来的**
+        它读的是 SDK 内部/本地配置里的某个字典（与支付回包无关）
+
+  三、之前所有"改回包"的尝试为什么全失败（现在有解释了）
+     · 6 种 JSON 结构轮换
+     · 97 个字段名超集
+     · request_id 回显
+     · 响应头 X-Sign / X-Ticket-Status（照崩坏3 SDK 模拟器的做法）
+     · code 值 0 / 200 / "0"
+     全部无效，因为问题不在回包这一层
+
+  四、顺带验证到的事实
+     · 官方 gatelist 可访问：
+       https://gf2-zoneinfo.sunborngame.com/zone/gatelist?version=4.0.5136&type_id=3&game_channel_id=5
+       → {"code":0,"msg":"OK","data":["101.201.173.238:7001","8.141.91.215:7001"]}
+     · 官方 /config 需要参数：{"code":10001,"msg":"无效参数"}
+     · 我们的 /config 是 SDK 启动时拉取的（本次会话没触发，属登录阶段）
+
+  五、下一步唯一有意义的方向
+     要找的是 SDK 初始化时读的那份"渠道/支付配置"（本地字典来源）：
+       a) 客户端启动时拉取的 /config 响应里是否有缺失字段（需重启游戏抓一次请求参数）
+       b) 或 SDK 程序集内部的常量表 —— 但该程序集在 HybridCLR 下只有元数据，
+          方法体/字符串字面量被加密，内存里也扫不到可切 PE（±256MB 无 MZ）
+     结论：不改客户端的前提下，无法拿到它要的"真格式"。
+
+  六、当前保留
+     · 服务端发货链路仍可用（购买 → 精确发那一件时装）
+     · 支付探测代码已切到"决定性实验"分支（1→非法JSON 2→500 3→空），可随时换回
+
+================================================================
+第 40 轮 · 2026-11-11 08:35（抓 /config 请求 → 对比官方 config：只差 5 个无关字段）
+================================================================
+
+  一、抓到了客户端启动时的 /config 请求原文
+     POST /config
+     body = {"language":"cn","reyun_channel_id":"1038","game_channel_id":5,
+             "os":3,"type_id":3,"version":"4.0.5136.0.0"}
+
+  二、用同样参数请求官方（成功，4295 字节）
+     POST https://gf2-zoneinfo.sunborngame.com/config
+     → {"code":0,"msg":"OK","data":{...}}
+     已保存：official_config.json（官方）、our_config.json（我们下发的）
+
+  三、字段级对比结果
+     官方 45 个字段，我们 40 个；我们缺的 5 个全部与支付无关：
+        world commander_can_fly_api_url / commander_can_fly_web_url
+        mica_h5_duo_bp_api_ur / mica_h5_duo_bp_api_url / mica_h5_duo_bp_web_url
+     ⇒ **config 里没有"支付渠道"这个缺失项**，改 config 也解决不了 KeyNotFound
+
+  四、对第 39 轮"决定性实验"的修正（重要）
+     第 39 轮用"非法 JSON / 500 / 空 body"三次结果相同，我当时判断"与响应无关"。
+     更严谨的解释：SDK 很可能**捕获了 JSON 解析异常并退化成空字典**，
+     然后仍去 data["xxx"] 取值 → 同样 KeyNotFound。
+     ⇒ 结论改为：**响应仍然重要，只是我们猜不到那个 key 名**
+     ⇒ 要拿到 key 名，只能反编译 MTSDKApi（HybridCLR 下无 PE、字面量加密），
+        或者改客户端跳过 SDK
+
+  五、外围事实（已验证）
+     · 官方 gatelist 可访问（返回真实服务器 IP:端口）
+     · 官方 /config 可访问（无需令牌）
+     · 官方支付接口需要访问令牌（本地签发的令牌被判"访问令牌无效"）
+
+  六、最终判断
+     不改客户端的前提下，无法得知 SDK 期望的字段名；
+     服务端已能做"按表精确发放时装"（数据库可验证），
+     但客户端商城界面不会因此刷新成"已拥有"。
+
+================================================================
+第 41 轮 · 2026-11-11 09:05（实锤三连：域名抓包 + 唯一URL探针 + 破坏性响应）
+================================================================
+
+  一、实锤手法一：进程内 hook 网络（在客户端启动前生效）
+     新增 gf2_nethook.c（侧载 DLL，IAT 打补丁 ws2_32!getaddrinfo / connect）
+     抓到客户端启动时解析的域名：
+        ir-sdk.dun.163.com          ← 网易易盾（设备/反作弊验证 SDK）
+        pro.ip-api.com              ← IP 归属地
+        sentry-cn.sunborngame.com   ← 官方错误上报
+     说明：MicaSDK 集成了易盾；支付相关域名没出现（走 127.0.0.1 或 DNS 已缓存）
+     注：connect 钩子未装上（conn=0，模块未直接导入），只拿到域名层
+
+  二、实锤手法二：唯一 URL 探针（让客户端自己指认它读哪个字段）
+     create_order_qr 返回合法 JSON，34 个候选 key 全部填唯一 URL：
+        顶层 qrCode = https://127.0.0.1/probe/top_qrCode
+        data.qrCode = https://127.0.0.1/probe/data_qrCode  …… 依次类推
+     客户端只要真的读取并使用某个字段（渲染/打开/请求），就会打到那个唯一 URL。
+     实测结果：服务端日志 [PAY] 已回探针包，但 **/probe 命中数 = 0**
+     ⇒ 客户端没有使用我们回包里的任何字段
+
+  三、实锤手法三（第 39 轮）：破坏性响应
+     非法 JSON / HTTP 500 / 200 空 body 三种，异常类型完全相同
+
+  四、三条合起来的结论（不再是猜）
+     MicaSDK 的 KeyNotFoundException 发生在**使用我们响应之前**：
+     它先在自己的本地数据里取 key 就失败了，我们的回包内容根本参与不进去。
+     ⇒ 服务端无论返回什么结构都不可能满足它
+     ⇒ 唯一出路：改客户端（把购买从 SDK 绕开，直接走 CS_StoreBuy）
+
+  五、副产品（以后可能有用）
+     · 官方 gatelist / config 均可匿名访问
+     · 官方支付接口需要访问令牌（本地令牌 → 10004 访问令牌无效）
+     · 网易易盾域名 ir-sdk.dun.163.com 是 SDK 初始化链路的一环
+
+  六、当前状态
+     · 时装已清空（0 件）
+     · 服务端：探针包分支在位（可随时切回正常/发货逻辑）
+     · 时装发货功能仍在（购买 → 精确写 CostumeEntity）
+
+================================================================
+第 42 轮 · 2026-11-11 09:40（内存找密钥：按 QQ三国 那套"已知明文 + 内存候选"方法，已出成果）
+================================================================
+
+  一、QQ三国的方法（E:\破解工具\03_解包工具\07_加密lua专项\key_hunt_v2.py）
+     内存 dump → 捞可打印串当候选密钥 → 用已知明文判定
+     （TEA 解首块 == 明文前 8 字节，命中即 2^-64 假阳性，等于实锤）
+     本机可用的反编译工具：ilspycmd 11.1（全局工具）
+
+  二、GF2 的重大发现：热更程序集是明文 PE，但方法体加密
+     路径：GF2_Exilium_Data\StreamingAssets\ClientRes_Windows\Codes\*.dll.bytes
+     39 个程序集，文件头全是 4D 5A 90 00（MZ，明文 PE），含 Assembly-CSharp.dll（37.8 MB）
+     ilspycmd 能列出全部 14735 个类型（StoreAnimatorController / SDKExtensionNP.SDKExtension 等）
+     但反编译方法体全是垃圾：
+        Stack underflow / Invalid branch target / Unknown opcode 0xBD
+     ⇒ 方法体是"IL 加密"，运行时由原生层解密（HybridCLR 加密方案）
+     ⇒ 这正是需要用"内存找密钥"攻克的地方
+
+  三、已从内存里挖到的东西（memsnap.bin，2.85 GB）
+     1) SDK 的接口清单（字符串表，偏移 461,329,xxx）：
+          uid device_num mac monetary_unit CNY amount product_id request_id channel_openid sub_id
+          weixin/create_order_qr   alipay/create_order_qr
+          epic/create_order / order_id / epic_product_id / epic_item_id / epic_entitlement_name
+          epic/redeem  type_id  configs  faq/get  prologue  score  sdk/config init
+          **order/qr_confirm**   ← 下单后还有一步"二维码确认"（轮询支付结果），
+                                    我们之前从没走到，因为 create_order_qr 解析就崩了
+          SDK_Pay_BASE_URL  phone_number area_code passwd verify_code id_card sid_type account
+     2) 一个 16 字节候选密钥串（唯一命中一次，位置紧挨上面这块字符串表）：
+          a86a86^oH$04r6A1
+        附近还有 delete_time / cancel_token / yyyy-MM-dd HH:mm
+     3) 其它线索：
+          /LocalCache/Data/cl.bin 内容就是 "1038"（reyun_channel_id，正常）
+          epic/EPOrderParamsBean/EPPayParamsBean/MTEOSIntegratedSDK（PC 端还有 Epic EOS 支付链路）
+          "OnPayCallback success={0} ret = {1}" —— 回调里有 ret 字段
+          phc_tcHf8WBy2imjcXNmnnyqEBfayZHKLjuVra2nEUm98GqL（PostHog 上报 key，非加密用）
+
+  四、结论与新方向
+     · 不是"找不到密钥"，而是"方法体加密"这一层需要用内存法攻克
+     · 下一步（已明确）：
+         a) 在 create_order_qr 里补上 order/qr_confirm 流程（SDK 的下一个请求）
+         b) 用候选密钥 a86a86^oH$04r6A1 试"响应签名/加密"（AES-128/HMAC）：
+            若 SDK 要求响应带签名，这就是那把钥匙
+         c) 若仍不行，就用 HybridCLR 解密后的内存副本取方法体（内存里一定有明文 IL，
+            只是还要定位其缓冲布局）
+
+================================================================
+第 43 轮 · 2026-11-11 10:00（用内存密钥 a86a86^oH$04r6A1 试 8 种响应签名/加密：全部被拒）
+================================================================
+
+  一、试的 8 种（服务端轮换，玩家点了 8 次，日志逐个确认）
+     1 纯 JSON（基线）
+     2 JSON + 响应头 X-Sign = HMAC-SHA256(key, body)
+     3 body = base64(AES-128-ECB(key, json))
+     4 JSON 内嵌 "sign" = HMAC-SHA256(key, json)
+     5 body = base64(AES-128-CBC(key, IV=key))
+     6 body = hex(AES-128-ECB(key, json))
+     7 {"code":0,"msg":"ok","data": base64(AES-ECB(json))}
+     8 JSON + X-Sign = HMAC(key, json+timestamp) + X-Timestamp + Server:Tengine
+
+  二、结果
+     · 8 种全部发出（日志 [KEY] 试法1..8 齐全）
+     · **order/qr_confirm 一次都没被调用**（0 次）
+     · 客户端仍然报异常（KeyNotFound / NullReference / ArgumentOutOfRange 混合出现）
+     ⇒ a86a86^oH$04r6A1 不是"响应签名/加密"的钥匙
+     ⇒ 失败发生在 SDK 使用响应之前（与第 39/41 轮的结论一致）
+
+  三、附带完成
+     · 已实现 order/qr_confirm 端点（返回 paid=true/status=1），
+       只要 create_order_qr 那步能过，后续轮询就能被喂"已支付"
+     · 该端点保留在 SDKController 里，将来解出 SDK 逻辑后可直接用
+
+  四、剩下的唯一技术路线（大工程，未开始）
+     HybridCLR 的 IL 加密：程序集是明文 PE（Codes/*.dll.bytes，39 个，含 Assembly-CSharp 37.8MB），
+     但方法体加密；运行时由原生层解密。
+     目标：在内存里定位"解密后的方法体缓冲"，或用内存候选密钥 + 已知明文判定
+     （QQ三国 key_hunt_v2.py 那套判据）解出 IL，才能知道 SDK 到底读哪个字段。
+     线索：SDK 字符串表在内存偏移 461,329,xxx；
+           接口清单已拿到（alipay/create_order_qr、order/qr_confirm、epic/create_order …）
+
+================================================================
+第 44 轮 · 2026-11-11 10:15（开始攻 HybridCLR 的 IL 加密）
+================================================================
+
+  一、目标
+     Codes/*.dll.bytes 是明文 PE（MZ 头、元数据可读），但方法体是加密的：
+     反编译输出 Stack underflow / Invalid branch target / Unknown opcode 0xBD。
+     要解出方法体，才知道 SDKExtension / 商城逻辑到底怎么调 SDK、要什么字段。
+
+  二、已确认的事实（拿来定位攻击面）
+     · 39 个热更程序集，均在
+       GF2_Exilium_Data\StreamingAssets\ClientRes_Windows\Codes\*.dll.bytes
+       其中 Assembly-CSharp.dll 37.8 MB（ilspycmd 可列 14735 个类型）
+     · GameAOTMain.dll（31.5KB）里有关键类型：
+         GameAOTMain.GameAOTLoader / DllConfig / GameStaticConfig
+         AOTFramework.Utility (+Encryption) / HDiffPatch
+       —— 这就是热更程序集的加载/解密入口
+     · SDK 程序集不在 Codes 里（搜 MTSDKApi/MicaSDK 均无命中），
+       内存字符串里有 MT_PC_SDK.MT_PC_Global_Haowan.SDK.MicaPnSDK 这类名字
+       ⇒ SDK 程序集是运行时从别处加载（很可能来自 bundle 或原生层）
+     · 内存里 SDK 字符串表（ASCII，非 UTF-16）位于偏移 461,329,xxx，
+       含完整接口清单（alipay/create_order_qr、order/qr_confirm、epic/create_order…）
+
+  三、攻击路线（本轮开始执行）
+     A. 在 memsnap 里找"解密后的 PE 镜像"
+        （若游戏整包解密后加载，内存中会存在完整 MZ + PE 头 + SizeOfImage ≈ 37.8MB 的镜像，
+          直接抠出来即可反编译，不需要密钥）
+     B. 找不到镜像 → 找"方法体解密缓冲"（HybridCLR 只解密方法体时，缓冲较小且零散）
+     C. 再不行 → 内存候选密钥 + 已知明文判据（QQ三国 key_hunt_v2.py 的方法）
+
+================================================================
+第 45 轮 · 2026-11-11 10:40（Superset 4004 键仍被拒 + memsnap 结构摸清）
+================================================================
+
+  一、"从元数据抽键"实验（本次最大一次尝试）
+     做法：在 memsnap（2.85GB）的全局元数据区（偏移 460,000,000 起 120MB）
+           抽 ASCII 标识符 130,417 个 → 按支付关键词筛到 4000 个 → 写入 probe_keys.json
+           服务端把 4004 个键同时放进响应【顶层】和【data】，回包 180KB（自测 200 OK）
+     结果：客户端仍是 KeyNotFoundException，order/qr_confirm 调用 0 次
+     ⇒ 需要的 key 不是元数据里的普通标识符（可能是拼接串/加密串/或根本不是响应里的）
+
+  二、memsnap 结构（本轮摸清，后续有用）
+     文件：E:\残服务端破解\03_中间产物\GF2_lua\memsnap.bin（2.85 GB）
+     索引：memsnap_index.txt，每行 = VA 大小 文件偏移 保护 类型，共 2949 个区域
+       类型：PRIVATE 1965 个、IMAGE 984 个
+       IMAGE 最大几个：
+         VA 7FFAC8F31000  size 69,328,896  off 2,813,501,440  XR
+         VA 7FF9FE731000  size 66,764,800  off 2,506,432,512  XR
+         VA 7FFAC1F67000  size 40,693,760  off 2,742,521,856  R
+       （都是原生模块的 section，不是托管程序集头）
+
+  三、全局元数据定位
+     魔数 0xFAB11BAF 命中 1 次：偏移 460,922,944
+     这里存着 il2cpp 元数据（SDK 的类型名 MTSDKApi 出现 79 次就在这片区域）
+     ⇒ SDK 是 **AOT（il2cpp）编译进 GameAssembly.dll** 的，不是热更 C# 程序集
+     ⇒ 所以要拿到它的逻辑，得看 GameAssembly 的原生代码（Ghidra 路线），
+        而不是解 C# 的 IL 加密
+
+  四、结论与下一步
+     · "响应缺字段"这条线已经试到极限（结构、头、签名、密钥、4004 键超集全部失败）
+     · 真正的下一步是 **GameAssembly.dll 原生逆向**：
+         - 在 GameAssembly 里定位字符串 "alipay/create_order_qr" 的引用，
+           顺着找 create_order_qr 的解析函数，看它读响应里的哪个字段
+         - 这属于 Ghidra 逆向工作量，不是服务端改几行能验证的
+     · 本机已有 Ghidra 输出目录：E:\破解工具\_ghidra_out（可复用）
+
+================================================================
+第 46 轮 · 2026-11-11 09:25（★ 真钱购买彻底打通：客户端弹出"成功购买"）
+================================================================
+
+  一、突破方法：内存找密钥 + Il2CppDumper + 反汇编（不再靠猜）
+     1) memsnap 里按区域定位到**解密后的全局元数据**
+        区域 VA=0x2A60DCF9000，大小 17,924,096，文件偏移 460,922,880，魔数在区内 +64
+        → 抠出 E:\GF2\_decomp\global-metadata.dec.dat（17.1 MB，明文）
+        验证：alipay/create_order_qr、order/qr_confirm、MTSDKApi 均在
+     2) 磁盘上的 global-metadata.dat 是加密的，Il2CppDumper 报 invalid；
+        解密副本把版本字段强制试遍后，**v24.4 解析成功**
+        → E:\GF2\_decomp\out_v24\dump.cs（38 MB）/ script.json（119 MB）/
+          stringliteral.json（1.6 MB）/ il2cpp.h（68 MB）
+     3) 用 capstone 反汇编 GameAssembly.dll 中对应方法，把 rip 相对寻址解析成
+        字面量/方法名，直接读出它读哪些字段
+
+  二、反汇编得到的真实协议（这是决定性证据）
+     <CreateOrderByQR>b__0(JsonData data)：
+        inner = data["data"]                     // get_Item，缺 key 直接抛 KeyNotFound
+        if (inner 是对象) {
+            var limit    = inner["limit"];       // 必须存在！之前缺这个 → 一直 KeyNotFound
+            var param    = inner["param"];       // 字符串 = 二维码内容/URL
+            var order_id = inner["order_id"];    // 字符串 = 订单号
+            if (limit 是对象) onAntiLimitPay(limit);
+            else if (param/order_id 是字符串)
+                 onCreateQROrderSucc(param.ToString(), order_id.ToString());  // 成功
+        }
+     <RequestQROrderState>b__0(JsonData data)：
+        var d = data["data"];
+        int v = (int)d;                          // 直接转 int
+        if (v == 1) onOrderPaySuccess.Invoke();  // 支付成功
+
+  三、服务端最终回包（照上面写的）
+     POST /alipay/create_order_qr →
+        {"code":0,"msg":"ok","data":{
+            "limit":0,
+            "param":"https://gf2-zonepay.sunborngame.com/mock/qr?order=<id>",
+            "order_id":"<id>"}}
+     POST /order/qr_confirm →
+        {"code":0,"msg":"ok","data":1}
+
+  四、实测结果（用户确认）
+     · 弹出二维码 ✔
+     · 客户端弹"成功购买" ✔
+     · 服务端照表发货：
+         [SHOP] 购买命中: 衣装·… (88元) → 商品 2030 → 奖励 31070:1;
+         [SHOP]   + 时装 CostumeId=1105501 x1
+         数据库 Costumes=3、Items=6 ✔
+     · 唯一遗留：商城界面当场不刷新成"已拥有"（客户端只在自己重进页面时重拉）
+
+  五、产物（打包给原作者）
+     E:\GF2\_decomp\global-metadata.dec.dat      解密后的 il2cpp 元数据（17.1 MB）
+     E:\GF2\_decomp\out_v24\dump.cs             反编译结构（38 MB）
+     E:\GF2\_decomp\out_v24\script.json         方法/字面量地址表（119 MB）
+     E:\GF2\_decomp\out_v24\stringliteral.json  字面量（1.6 MB）
+     E:\GF2\_decomp\out_v24\il2cpp.h            头文件（68 MB）
+     说明：磁盘 metadata 加密，必须用这份从内存抠出的解密副本，版本 24.4
